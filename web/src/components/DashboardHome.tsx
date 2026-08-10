@@ -412,13 +412,13 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                   <span className="text-xs text-gray-500">{session.terminals.length} agent{session.terminals.length !== 1 ? 's' : ''}</span>
                 </div>
 
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
+                <div className="divide-y divide-gray-700/40">
                   {sortedTerminals.map(t => {
                             const relCreated = fmtRel(t.created_at)
                             const relActive = fmtRel(t.last_active)
                             const showActive = relActive && relActive !== relCreated
                             return (
-                              <div key={t.id} className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3 space-y-2">
+                              <div key={t.id} className="py-3 first:pt-0 last:pb-0 space-y-2">
                                 <div className="flex items-center justify-between">
                                   <div className="flex items-center gap-2 min-w-0">
                                     <TermIcon size={12} className="text-gray-500 shrink-0" />
