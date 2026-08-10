@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, Session, SessionDetail, TerminalMeta } from './api'
+import { api, FleetNode, Session, SessionDetail } from './api'
 
 // Only trigger React re-renders when data actually changed
 function jsonEqual(a: unknown, b: unknown): boolean {
@@ -18,16 +18,20 @@ interface Store {
   connected: boolean
   snackbar: Snackbar | null
   terminalStatuses: Record<string, string>
+  fleetNodes: FleetNode[]
+  selectedNode: string | null
 
   fetchSessions: () => Promise<void>
   selectSession: (name: string | null) => Promise<void>
-  createSession: (provider: string, agentProfile: string, workingDirectory?: string, sessionName?: string) => Promise<void>
+  createSession: (provider: string, agentProfile: string, workingDirectory?: string, sessionName?: string, initialMessage?: string, useWorktree?: boolean) => Promise<void>
   deleteSession: (name: string) => Promise<void>
   showSnackbar: (snackbar: Snackbar) => void
   hideSnackbar: () => void
   setConnected: (connected: boolean) => void
   setTerminalStatus: (id: string, status: string) => void
   clearTerminalStatuses: (ids: string[]) => void
+  fetchFleetNodes: () => Promise<void>
+  selectNode: (node: string | null) => Promise<void>
 }
 
 export const useStore = create<Store>((set, get) => ({
@@ -37,10 +41,12 @@ export const useStore = create<Store>((set, get) => ({
   connected: false,
   snackbar: null,
   terminalStatuses: {},
+  fleetNodes: [],
+  selectedNode: null,
 
   fetchSessions: async () => {
     try {
-      const sessions = await api.listSessions()
+      const sessions = await api.listSessions(get().selectedNode)
       const prev = get()
       // Only skip empty responses when reconnecting (connected was false),
       // not after intentional deletions.
@@ -63,7 +69,7 @@ export const useStore = create<Store>((set, get) => ({
     }
     set({ activeSession: name })
     try {
-      const detail = await api.getSession(name)
+      const detail = await api.getSession(name, get().selectedNode)
       if (!jsonEqual(get().activeSessionDetail, detail)) {
         set({ activeSessionDetail: detail })
       }
@@ -72,9 +78,9 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
-  createSession: async (provider, agentProfile, workingDirectory, sessionName) => {
+  createSession: async (provider, agentProfile, workingDirectory, sessionName, initialMessage, useWorktree) => {
     try {
-      await api.createSession(provider, agentProfile, sessionName, workingDirectory)
+      await api.createSession(provider, agentProfile, sessionName, workingDirectory, get().selectedNode, initialMessage, useWorktree)
       get().showSnackbar({ type: 'success', message: 'Session created' })
       await get().fetchSessions()
     } catch (e: any) {
@@ -84,7 +90,7 @@ export const useStore = create<Store>((set, get) => ({
 
   deleteSession: async (name) => {
     try {
-      await api.deleteSession(name)
+      await api.deleteSession(name, get().selectedNode)
       get().showSnackbar({ type: 'success', message: `Deleted ${name}` })
       if (get().activeSession === name) {
         set({ activeSession: null, activeSessionDetail: null })
@@ -113,4 +119,22 @@ export const useStore = create<Store>((set, get) => ({
       if (Object.keys(next).length === Object.keys(state.terminalStatuses).length) return state
       return { terminalStatuses: next }
     }),
+  fetchFleetNodes: async () => {
+    try {
+      set({ fleetNodes: await api.listFleetNodes() })
+    } catch {
+      set({ fleetNodes: [] })
+    }
+  },
+  selectNode: async (node) => {
+    set({
+      selectedNode: node,
+      sessions: [],
+      activeSession: null,
+      activeSessionDetail: null,
+      terminalStatuses: {},
+      connected: false,
+    })
+    await get().fetchSessions()
+  },
 }))

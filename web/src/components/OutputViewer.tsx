@@ -9,9 +9,10 @@ function stripAnsi(text: string): string {
 interface OutputViewerProps {
   terminalId: string
   onClose: () => void
+  node?: string | null
 }
 
-export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
+export function OutputViewer({ terminalId, onClose, node }: OutputViewerProps) {
   const [mode, setMode] = useState<'last' | 'full'>('last')
   const [output, setOutput] = useState('')
   const [loading, setLoading] = useState(true)
@@ -21,7 +22,7 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
   const fetchOutput = async (m: 'last' | 'full') => {
     setLoading(true)
     try {
-      const data = await api.getTerminalOutput(terminalId, m)
+      const data = await api.getTerminalOutput(terminalId, m, node)
       setOutput(data.output || '')
     } catch {
       setOutput('')
@@ -31,7 +32,7 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
 
   useEffect(() => {
     fetchOutput(mode)
-  }, [mode, terminalId])
+  }, [mode, terminalId, node])
 
   // Auto-scroll to bottom on full output mode
   useEffect(() => {

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { api, AgentProfileInfo, ProviderInfo } from '../api'
+import { api, AgentProfileInfo, FleetNodeOverview, ProviderInfo } from '../api'
 import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Tag, Search, Mail, Plus, LogOut, Send, FileText, X } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
@@ -9,6 +9,7 @@ import { CustomSelect, SelectOption } from './CustomSelect'
 import { TerminalMeta } from '../api'
 import { StatusBadge } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
+import { RemoteDirectoryPicker } from './RemoteDirectoryPicker'
 
 export const FALLBACK_PROVIDERS = ['kiro_cli', 'claude_code', 'q_cli', 'codex', 'gemini_cli', 'hermes', 'kimi_cli', 'copilot_cli', 'opencode_cli', 'cursor_cli']
 
@@ -21,7 +22,7 @@ const SOURCE_LABELS: Record<string, string> = {
 }
 
 export function AgentPanel() {
-  const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, deleteSession, terminalStatuses, setTerminalStatus } = useStore()
+  const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, deleteSession, terminalStatuses, setTerminalStatus, fleetNodes, selectedNode, fetchFleetNodes, selectNode } = useStore()
   const [provider, setProvider] = useState('kiro_cli')
   const [profile, setProfile] = useState('')
   const [creating, setCreating] = useState(false)
@@ -35,7 +36,8 @@ export function AgentPanel() {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
 
   useEffect(() => {
-    api.listProviders()
+    setProviders([])
+    api.listProviders(selectedNode)
       .then(p => {
         setProviders(p)
         // Default to first installed provider
@@ -43,13 +45,15 @@ export function AgentPanel() {
         if (firstInstalled) setProvider(firstInstalled.name)
       })
       .catch(() => {})
-  }, [])
+  }, [selectedNode])
   const [pendingClose, setPendingClose] = useState<TerminalMeta | null>(null)
   const [closingTerminal, setClosingTerminal] = useState<string | null>(null)
   const [sessionSearch, setSessionSearch] = useState('')
   const [inboxTerminalId, setInboxTerminalId] = useState<string | null>(null)
   const [workingDirectory, setWorkingDirectory] = useState('')
   const [sessionName, setSessionName] = useState('')
+  const [initialTask, setInitialTask] = useState('')
+  const [useWorktree, setUseWorktree] = useState(false)
   const [terminalWorkDirs, setTerminalWorkDirs] = useState<Record<string, string | null>>({})
   const [showAddAgent, setShowAddAgent] = useState(false)
   const [addProvider, setAddProvider] = useState('kiro_cli')
@@ -64,13 +68,45 @@ export function AgentPanel() {
   const { showSnackbar } = useStore()
   const [outputTerminalId, setOutputTerminalId] = useState<string | null>(null)
   const [showSpawnModal, setShowSpawnModal] = useState(false)
+  const [showDirectoryPicker, setShowDirectoryPicker] = useState(false)
+  const [fleetOverview, setFleetOverview] = useState<FleetNodeOverview[]>([])
+  const [refreshingFleet, setRefreshingFleet] = useState(false)
+  const notifiedWaiting = useRef(new Set<string>())
+  const monitoredNodes = fleetOverview.filter(node => node.status === 'reachable').map(node => node.name).join(',')
+
+  useEffect(() => { fetchFleetNodes() }, [])
+
+  useEffect(() => {
+    if (!monitoredNodes) return
+    const nodes = monitoredNodes.split(',')
+    const interval = setInterval(() => {
+      api.getFleetOverview(nodes).then(setFleetOverview).catch(() => {})
+    }, 10000)
+    return () => clearInterval(interval)
+  }, [monitoredNodes])
+
+  useEffect(() => {
+    fleetOverview.forEach(node => node.sessions.forEach(session => session.terminals?.forEach(terminal => {
+      const key = `${node.name}:${terminal.id}`
+      const status = terminal.status?.toUpperCase()
+      if (status === 'WAITING_USER_ANSWER' && !notifiedWaiting.current.has(key)) {
+        notifiedWaiting.current.add(key)
+        showSnackbar({ type: 'info', message: `${terminal.id} on ${node.name} needs your input` })
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('Agent needs your input', { body: `${terminal.id} on ${node.name}` })
+        }
+      } else if (status !== 'WAITING_USER_ANSWER') {
+        notifiedWaiting.current.delete(key)
+      }
+    })))
+  }, [fleetOverview])
 
   const handleDeleteTerminal = async () => {
     if (!pendingClose) return
     const id = pendingClose.id
     setClosingTerminal(id)
     try {
-      await api.deleteTerminal(id)
+      await api.deleteTerminal(id, selectedNode)
       if (liveTerminal?.id === id) setLiveTerminal(null)
       if (activeSession) await selectSession(activeSession)
       showSnackbar({ type: 'success', message: `Terminal ${id} closed — tmux window killed` })
@@ -86,7 +122,7 @@ export function AgentPanel() {
     const id = pendingExit.id
     setExitingTerminal(id)
     try {
-      await api.exitTerminal(id)
+      await api.exitTerminal(id, selectedNode)
       if (activeSession) await selectSession(activeSession)
       showSnackbar({ type: 'success', message: `Graceful exit sent to terminal ${id}` })
     } catch {
@@ -101,7 +137,7 @@ export function AgentPanel() {
     if (!message) return
     setSendingInput(terminalId)
     try {
-      await api.sendInput(terminalId, message)
+      await api.sendInput(terminalId, message, selectedNode)
       setSendInputValues(prev => ({ ...prev, [terminalId]: '' }))
       showSnackbar({ type: 'success', message: `Message sent to terminal ${terminalId}` })
     } catch {
@@ -111,10 +147,11 @@ export function AgentPanel() {
   }
 
   useEffect(() => {
-    api.listProfiles()
+    setLoadingProfiles(true)
+    api.listProfiles(selectedNode)
       .then(p => { setProfiles(p); setLoadingProfiles(false) })
       .catch(() => setLoadingProfiles(false))
-  }, [])
+  }, [selectedNode])
 
   useEffect(() => {
     if (activeSession) {
@@ -130,7 +167,7 @@ export function AgentPanel() {
     const terminalIds = activeSessionDetail.terminals.map(t => t.id)
     const fetchStatuses = () => {
       terminalIds.forEach(id => {
-        api.getTerminalStatus(id)
+        api.getTerminalStatus(id, selectedNode)
           .then(status => { if (status) setTerminalStatus(id, status) })
           .catch(() => {})
       })
@@ -138,18 +175,35 @@ export function AgentPanel() {
     fetchStatuses()
     const interval = setInterval(fetchStatuses, 3000)
     return () => clearInterval(interval)
-  }, [activeSessionDetail?.terminals.map(t => t.id).join(',')])
+  }, [activeSessionDetail?.terminals.map(t => t.id).join(','), selectedNode])
+
+  useEffect(() => {
+    Object.entries(terminalStatuses).forEach(([id, status]) => {
+      const key = `${selectedNode || 'local'}:${id}`
+      if (status === 'WAITING_USER_ANSWER' && !notifiedWaiting.current.has(key)) {
+        notifiedWaiting.current.add(key)
+        showSnackbar({ type: 'info', message: `${id} on ${selectedNode || 'this laptop'} needs your input` })
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('Agent needs your input', { body: `${id} on ${selectedNode || 'this laptop'}` })
+        }
+      } else if (status !== 'WAITING_USER_ANSWER') {
+        notifiedWaiting.current.delete(key)
+      }
+    })
+  }, [terminalStatuses, selectedNode])
 
   const handleCreate = async () => {
     if (creatingRef.current || !profile.trim()) return
     creatingRef.current = true
     setCreating(true)
     try {
-      await createSession(provider, profile.trim(), workingDirectory.trim() || undefined, sessionName.trim() || undefined)
+      await createSession(provider, profile.trim(), workingDirectory.trim() || undefined, sessionName.trim() || undefined, initialTask.trim() || undefined, useWorktree)
       setShowSpawnModal(false)
       setProfile('')
       setWorkingDirectory('')
       setSessionName('')
+      setInitialTask('')
+      setUseWorktree(false)
     } finally {
       setCreating(false)
       creatingRef.current = false
@@ -165,18 +219,18 @@ export function AgentPanel() {
     if (!activeSessionDetail?.terminals.length) return
     activeSessionDetail.terminals.forEach(t => {
       if (terminalWorkDirs[t.id] === undefined) {
-        api.getWorkingDirectory(t.id)
+        api.getWorkingDirectory(t.id, selectedNode)
           .then(res => setTerminalWorkDirs(prev => ({ ...prev, [t.id]: res.working_directory })))
           .catch(() => setTerminalWorkDirs(prev => ({ ...prev, [t.id]: null })))
       }
     })
-  }, [activeSessionDetail?.terminals.map(t => t.id).join(',')])
+  }, [activeSessionDetail?.terminals.map(t => t.id).join(','), selectedNode])
 
   const handleAddAgent = async () => {
     if (!addProfile.trim() || !activeSession) return
     setAddingAgent(true)
     try {
-      await api.addTerminalToSession(activeSession, addProvider, addProfile.trim(), addWorkDir.trim() || undefined)
+      await api.addTerminalToSession(activeSession, addProvider, addProfile.trim(), addWorkDir.trim() || undefined, selectedNode)
       showSnackbar({ type: 'success', message: 'Agent added to session' })
       setShowAddAgent(false)
       setAddProfile('')
@@ -198,6 +252,68 @@ export function AgentPanel() {
 
   return (
     <div className="space-y-6">
+      <div className="bg-gray-800/60 border border-blue-700/30 rounded-xl p-5">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">Execution node</h3>
+            <p className="text-xs text-gray-500 mt-1">Choose the host explicitly. CAO does not schedule or move this task to another node.</p>
+          </div>
+          <div className="w-72 max-w-full">
+            <CustomSelect
+              value={selectedNode || '__local__'}
+              onChange={value => {
+                setWorkingDirectory('')
+                setAddWorkDir('')
+                selectNode(value === '__local__' ? null : value)
+              }}
+              placeholder="Select execution node..."
+              options={[
+                { value: '__local__', label: 'This laptop', sublabel: 'Local CAO server' },
+                ...fleetNodes.map(node => ({ value: node.name, label: node.name, sublabel: 'SSH node' })),
+              ]}
+            />
+          </div>
+        </div>
+        <div className="mt-4 pt-4 border-t border-gray-700/40">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <span className="text-xs text-gray-500">Fleet overview is refreshed on demand to avoid opening SSH tunnels to every configured host automatically.</span>
+            <button
+              onClick={() => {
+                setRefreshingFleet(true)
+                api.getFleetOverview()
+                  .then(setFleetOverview)
+                  .catch(error => showSnackbar({ type: 'error', message: error.detail || 'Fleet refresh failed' }))
+                  .finally(() => setRefreshingFleet(false))
+              }}
+              disabled={refreshingFleet}
+              className="shrink-0 px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-200 rounded-lg"
+            >
+              {refreshingFleet ? 'Refreshing…' : 'Refresh all nodes'}
+            </button>
+          </div>
+          {fleetOverview.length > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2 max-h-48 overflow-y-auto">
+              {fleetOverview.map(node => (
+                <button
+                  key={node.name}
+                  onClick={() => node.status === 'reachable' && selectNode(node.name)}
+                  disabled={node.status !== 'reachable'}
+                  title={node.detail || `${node.sessions.length} active sessions`}
+                  className={`text-left px-3 py-2 rounded-lg border ${node.status === 'reachable' ? 'bg-gray-900/60 border-gray-700 hover:border-blue-600' : 'bg-red-950/20 border-red-900/30 opacity-60'}`}
+                >
+                  <span className="block text-xs font-mono text-gray-300 truncate">{node.name}</span>
+                  <span className={`block text-[10px] mt-0.5 ${node.status === 'reachable' ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {node.status === 'reachable'
+                      ? `${node.sessions.length} session${node.sessions.length === 1 ? '' : 's'} · ${node.sessions.reduce((count, session) => count + (session.terminals?.length || 0), 0)} agents${node.sessions.some(session => session.terminals?.some(terminal => terminal.status?.toUpperCase() === 'WAITING_USER_ANSWER')) ? ' · input needed' : ''}`
+                      : 'unavailable'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Sessions List */}
       <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-5">
         <div className="flex items-center justify-between mb-1">
@@ -218,7 +334,12 @@ export function AgentPanel() {
               </div>
             )}
             <button
-              onClick={() => setShowSpawnModal(true)}
+              onClick={() => {
+                setShowSpawnModal(true)
+                if ('Notification' in window && Notification.permission === 'default') {
+                  Notification.requestPermission().catch(() => {})
+                }
+              }}
               className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
             >
               <Plus size={14} />
@@ -452,7 +573,7 @@ export function AgentPanel() {
 
       {/* Inbox Panel */}
       {inboxTerminalId && (
-        <InboxPanel terminalId={inboxTerminalId} onClose={() => setInboxTerminalId(null)} />
+        <InboxPanel terminalId={inboxTerminalId} node={selectedNode} onClose={() => setInboxTerminalId(null)} />
       )}
 
       {/* Live Terminal */}
@@ -461,6 +582,7 @@ export function AgentPanel() {
           terminalId={liveTerminal.id}
           provider={liveTerminal.provider}
           agentProfile={liveTerminal.agentProfile}
+          node={selectedNode}
           onClose={() => setLiveTerminal(null)}
         />
       )}
@@ -469,6 +591,7 @@ export function AgentPanel() {
       {outputTerminalId && (
         <OutputViewer
           terminalId={outputTerminalId}
+          node={selectedNode}
           onClose={() => setOutputTerminalId(null)}
         />
       )}
@@ -533,6 +656,14 @@ export function AgentPanel() {
             {/* Modal body */}
             <div className="p-5 space-y-4">
               <div>
+                <label className="block text-xs text-gray-500 mb-1">Execution Node</label>
+                <div className="flex items-center gap-2 bg-blue-950/30 border border-blue-800/40 text-blue-200 text-sm rounded-lg px-3 py-2.5 font-mono">
+                  <Monitor size={14} />
+                  {selectedNode || 'this laptop'}
+                </div>
+              </div>
+
+              <div>
                 <label className="block text-xs text-gray-500 mb-1">Provider</label>
                 <CustomSelect
                   value={provider}
@@ -590,19 +721,55 @@ export function AgentPanel() {
               </div>
 
               <div>
+                <label className="block text-xs text-gray-500 mb-1">Task <span className="text-gray-600">(optional)</span></label>
+                <textarea
+                  value={initialTask}
+                  onChange={event => setInitialTask(event.target.value)}
+                  placeholder="Describe the work for this agent…"
+                  rows={4}
+                  className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5 focus:border-emerald-500 focus:outline-none resize-y"
+                />
+              </div>
+
+              <div>
                 <label className="block text-xs text-gray-500 mb-1">Working Directory <span className="text-gray-600">(optional)</span></label>
-                <div className="relative">
-                  <FolderOpen size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                  <input
-                    type="text"
-                    value={workingDirectory}
-                    onChange={e => setWorkingDirectory(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleCreate()}
-                    placeholder="/path/to/project (defaults to home)"
-                    className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm font-mono rounded-lg pl-9 pr-3 py-2.5 focus:border-emerald-500 focus:outline-none"
-                  />
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <FolderOpen size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                    <input
+                      type="text"
+                      value={workingDirectory}
+                      onChange={e => setWorkingDirectory(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleCreate()}
+                      placeholder="/path/to/project (defaults to home)"
+                      className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm font-mono rounded-lg pl-9 pr-3 py-2.5 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowDirectoryPicker(true)}
+                    disabled={!selectedNode}
+                    title={selectedNode ? 'Browse directories on selected node' : 'Select an SSH node to browse remotely'}
+                    className="px-3 py-2 text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-200 rounded-lg"
+                  >
+                    Browse
+                  </button>
                 </div>
               </div>
+
+              <label className="flex items-start gap-3 p-3 bg-gray-900/50 border border-gray-700/50 rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={useWorktree}
+                  onChange={event => setUseWorktree(event.target.checked)}
+                  disabled={!workingDirectory.trim()}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block text-sm text-gray-300">Create isolated Git worktree</span>
+                  <span className="block text-xs text-gray-500 mt-0.5">CAO creates a dedicated branch and checkout under the selected repository on {selectedNode || 'this laptop'}.</span>
+                </span>
+              </label>
 
               {/* Quick-pick profiles */}
               {profiles.length > 0 && (
@@ -647,6 +814,18 @@ export function AgentPanel() {
             </div>
           </div>
         </div>
+      )}
+
+      {showDirectoryPicker && selectedNode && (
+        <RemoteDirectoryPicker
+          node={selectedNode}
+          initialPath={workingDirectory || '~'}
+          onClose={() => setShowDirectoryPicker(false)}
+          onSelect={path => {
+            setWorkingDirectory(path)
+            setShowDirectoryPicker(false)
+          }}
+        />
       )}
     </div>
   )

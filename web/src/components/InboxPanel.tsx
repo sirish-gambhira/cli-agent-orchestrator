@@ -5,6 +5,7 @@ import { X, Send, Mail, Loader2 } from 'lucide-react'
 interface InboxPanelProps {
   terminalId: string
   onClose: () => void
+  node?: string | null
 }
 
 type StatusFilter = 'all' | 'pending' | 'delivered' | 'failed'
@@ -45,7 +46,7 @@ function MessageStatusBadge({ status }: { status: InboxMessage['status'] }) {
   )
 }
 
-export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
+export function InboxPanel({ terminalId, onClose, node }: InboxPanelProps) {
   const [messages, setMessages] = useState<InboxMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<StatusFilter>('all')
@@ -57,7 +58,7 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
   const fetchMessages = async () => {
     try {
       const status = filter === 'all' ? undefined : filter
-      const data = await api.getInboxMessages(terminalId, 50, status)
+      const data = await api.getInboxMessages(terminalId, 50, status, node)
       setMessages(data)
     } catch {
       // silently fail — will retry
@@ -71,7 +72,7 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
     fetchMessages()
     const interval = setInterval(fetchMessages, 5000)
     return () => clearInterval(interval)
-  }, [terminalId, filter])
+  }, [terminalId, filter, node])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -94,7 +95,7 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
     if (!text || sending) return
     setSending(true)
     try {
-      await api.sendInboxMessage(terminalId, 'ui', text)
+      await api.sendInboxMessage(terminalId, 'ui', text, node)
       setSendText('')
       await fetchMessages()
     } catch {

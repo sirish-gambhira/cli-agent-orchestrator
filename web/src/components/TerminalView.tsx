@@ -9,9 +9,10 @@ interface TerminalViewProps {
   provider?: string
   agentProfile?: string | null
   onClose: () => void
+  node?: string | null
 }
 
-export function TerminalView({ terminalId, provider, agentProfile, onClose }: TerminalViewProps) {
+export function TerminalView({ terminalId, provider, agentProfile, onClose, node }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -45,7 +46,10 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose }: Te
 
     // Connect WebSocket
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${protocol}//${location.host}/terminals/${terminalId}/ws`)
+    const path = node
+      ? `/fleet/nodes/${encodeURIComponent(node)}/terminals/${terminalId}/ws`
+      : `/terminals/${terminalId}/ws`
+    const ws = new WebSocket(`${protocol}//${location.host}${path}`)
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
@@ -117,7 +121,7 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose }: Te
       ws.close()
       term.dispose()
     }
-  }, [terminalId])
+  }, [terminalId, node])
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: '#0d1117' }}>
@@ -126,6 +130,7 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose }: Te
         <div className="flex items-center gap-3">
           <TermIcon size={16} className="text-emerald-400" />
           <span className="text-sm font-mono text-gray-300">{terminalId}</span>
+          {node && <span className="text-xs text-blue-300 bg-blue-900/30 px-2 py-0.5 rounded">{node}</span>}
           {provider && <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded">{provider}</span>}
           {agentProfile && <span className="text-xs text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded">{agentProfile}</span>}
         </div>

@@ -55,6 +55,7 @@ async def create_session(
     model: str | None = None,
     group: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    use_worktree: bool = False,
 ) -> Terminal:
     """Create a new session by creating its initial terminal.
 
@@ -100,6 +101,7 @@ async def create_session(
         model=model,
         group=group,
         metadata=metadata,
+        use_worktree=use_worktree,
     )
     dispatch_plugin_event(
         registry,

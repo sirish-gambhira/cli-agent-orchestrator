@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, cast
 
+import websockets
 from fastapi import (
     BackgroundTasks,
     Body,
@@ -33,7 +34,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from cli_agent_orchestrator.backends import TerminalBackendError, TerminalNotFoundError
@@ -78,6 +79,12 @@ from cli_agent_orchestrator.graph.providers import GraphProvider, get_provider
 # Import the sinks package for its import-time @register_sink side effects
 # ("okf", "obsidian", "graphml"); get_sink resolves by name from the registry.
 from cli_agent_orchestrator.graph.sinks import get_sink
+from cli_agent_orchestrator.models.fleet import (
+    FleetNode,
+    FleetNodeCheck,
+    FleetNodeOverview,
+    RemoteDirectoryListing,
+)
 from cli_agent_orchestrator.models.flow import Flow
 from cli_agent_orchestrator.models.inbox import MessageStatus, OrchestrationType
 from cli_agent_orchestrator.models.kiro_engine import KiroEngine
@@ -105,6 +112,7 @@ from cli_agent_orchestrator.security.auth import (
     require_any_scope,
 )
 from cli_agent_orchestrator.services import (
+    fleet_service,
     flow_service,
     secret_gate,
     session_service,
@@ -120,6 +128,11 @@ from cli_agent_orchestrator.services.event_bus import bus
 from cli_agent_orchestrator.services.event_log_service import RING_CAPACITY
 from cli_agent_orchestrator.services.event_primitives import KINDS as EVENT_KINDS
 from cli_agent_orchestrator.services.fifo_reader import fifo_manager
+from cli_agent_orchestrator.services.fleet_service import (
+    NodeUnavailableError,
+    RemoteBrowseError,
+    UnknownNodeError,
+)
 from cli_agent_orchestrator.services.herdr_inbox_registry import set_herdr_inbox_service
 from cli_agent_orchestrator.services.herdr_inbox_service import HerdrInboxService
 from cli_agent_orchestrator.services.inbox_service import inbox_service
@@ -1033,6 +1046,178 @@ async def health_check():
             "claude": _probe("claude"),
         },
     }
+
+
+@app.get("/fleet/nodes", response_model=List[FleetNode])
+async def list_fleet_nodes(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> List[FleetNode]:
+    """List concrete host aliases discovered from the controller's SSH config."""
+
+    return fleet_service.fleet_service.list_nodes()
+
+
+@app.get("/fleet/overview", response_model=List[FleetNodeOverview])
+async def get_fleet_overview(
+    nodes: Optional[str] = Query(default=None, description="Optional comma-separated SSH aliases"),
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> List[FleetNodeOverview]:
+    """Refresh session summaries across all or explicitly listed SSH nodes."""
+
+    selected = [value.strip() for value in nodes.split(",") if value.strip()] if nodes else None
+    try:
+        return await asyncio.to_thread(fleet_service.fleet_service.fleet_overview, selected)
+    except UnknownNodeError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@app.get("/fleet/nodes/{node}/check", response_model=FleetNodeCheck)
+async def check_fleet_node(
+    node: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> FleetNodeCheck:
+    """Check one explicitly selected node using non-interactive OpenSSH."""
+
+    try:
+        return fleet_service.fleet_service.check_node(node)
+    except UnknownNodeError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@app.get(
+    "/fleet/nodes/{node}/directories",
+    response_model=RemoteDirectoryListing,
+)
+async def browse_fleet_node_directories(
+    node: str,
+    path: str = Query(default="~", min_length=1, max_length=4096),
+    include_hidden: bool = False,
+    limit: int = Query(default=500, ge=1, le=500),
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> RemoteDirectoryListing:
+    """Return a bounded, directory-only listing from an SSH node."""
+
+    try:
+        return fleet_service.fleet_service.browse_directories(
+            node=node,
+            path=path,
+            include_hidden=include_hidden,
+            limit=limit,
+        )
+    except UnknownNodeError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RemoteBrowseError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except NodeUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+_FLEET_PROXY_ROOTS = frozenset(
+    {
+        "agents",
+        "health",
+        "sessions",
+        "settings",
+        "terminals",
+    }
+)
+
+
+@app.api_route(
+    "/fleet/nodes/{node}/proxy/{remote_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+async def proxy_fleet_node_api(
+    node: str,
+    remote_path: str,
+    request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Response:
+    """Proxy an allowlisted CAO API request through a node's SSH tunnel."""
+
+    root = remote_path.split("/", 1)[0]
+    if root not in _FLEET_PROXY_ROOTS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Remote API path is not available through the fleet controller: {root}",
+        )
+    if request.method != "GET" and not ({SCOPE_WRITE, SCOPE_ADMIN} & set(_scopes)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Remote mutating requests require cao:write or cao:admin",
+        )
+    try:
+        result = await asyncio.to_thread(
+            fleet_service.fleet_service.proxy_request,
+            node=node,
+            method=request.method,
+            remote_path=f"/{remote_path}",
+            query=request.url.query,
+            body=await request.body(),
+            content_type=request.headers.get("content-type"),
+        )
+    except UnknownNodeError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except NodeUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    headers = {"content-type": result.content_type} if result.content_type else None
+    return Response(content=result.body, status_code=result.status_code, headers=headers)
+
+
+@app.websocket("/fleet/nodes/{node}/terminals/{terminal_id}/ws")
+async def proxy_fleet_terminal_ws(websocket: WebSocket, node: str, terminal_id: str):
+    """Relay one browser terminal connection through the selected node tunnel."""
+
+    if not is_ws_origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
+        await websocket.close(code=4403, reason="WebSocket Origin not allowed")
+        return
+    try:
+        fleet_service.fleet_service.validate_node(node)
+        tunnel = await asyncio.to_thread(fleet_service.fleet_service.tunnels.ensure, node)
+    except UnknownNodeError:
+        await websocket.close(code=4404, reason="Unknown SSH node")
+        return
+    except NodeUnavailableError:
+        await websocket.close(code=4502, reason="Remote CAO server unavailable")
+        return
+
+    remote_url = f"ws://127.0.0.1:{tunnel.local_port}/terminals/{terminal_id}/ws"
+    try:
+        async with websockets.connect(remote_url, origin=None) as remote:
+            await websocket.accept()
+
+            async def browser_to_node() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    if message.get("text") is not None:
+                        await remote.send(message["text"])
+                    elif message.get("bytes") is not None:
+                        await remote.send(message["bytes"])
+
+            async def node_to_browser() -> None:
+                async for message in remote:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            tasks = {
+                asyncio.create_task(browser_to_node()),
+                asyncio.create_task(node_to_browser()),
+            }
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*done, *pending, return_exceptions=True)
+    except (OSError, websockets.WebSocketException):
+        if websocket.client_state.name == "CONNECTED":
+            await websocket.close(code=4502, reason="Remote terminal connection failed")
 
 
 def _mcp_apps_enabled() -> bool:
@@ -2089,6 +2274,7 @@ async def create_session(
     memory_manager: Optional[str] = None,
     engine: Optional[KiroEngine] = None,
     model: Optional[str] = None,
+    use_worktree: bool = False,
     body: Optional[CreateSessionBody] = None,
     _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> Terminal:
@@ -2176,6 +2362,9 @@ async def create_session(
             model=model,
             group=body.group if body else None,
             metadata=body.metadata if body else None,
+            # Preserve the existing service call shape for local clients/tests
+            # unless the opt-in fleet/worktree feature is actually requested.
+            **({"use_worktree": True} if use_worktree else {}),
         )
 
         if memory_manager and str(memory_manager).lower() in ("true", "1", "yes"):
@@ -2201,6 +2390,8 @@ async def create_session(
 
         return result
 
+    except WorktreeError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:

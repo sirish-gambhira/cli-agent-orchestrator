@@ -48,6 +48,40 @@ async function fetchJSON<T>(url: string, opts?: RequestInit & { timeoutMs?: numb
   }
 }
 
+function nodeEndpoint(path: string, node?: string | null): string {
+  return node ? `/fleet/nodes/${encodeURIComponent(node)}/proxy${path}` : path
+}
+
+export interface FleetNode {
+  name: string
+}
+
+export interface FleetNodeOverview {
+  name: string
+  status: 'reachable' | 'unreachable'
+  sessions: Array<Session & { terminals?: Array<TerminalMeta & { status?: string | null }> }>
+  detail: string | null
+}
+
+export interface RemoteDirectoryEntry {
+  name: string
+  path: string
+  is_git_repository: boolean
+  is_worktree: boolean
+}
+
+export interface RemoteDirectoryListing {
+  node: string
+  path: string
+  parent: string | null
+  home: string
+  entries: RemoteDirectoryEntry[]
+  truncated: boolean
+  is_git_repository: boolean
+  is_worktree: boolean
+  git_branch: string | null
+}
+
 export interface Session {
   id: string
   name: string
@@ -190,9 +224,17 @@ export interface GraphExportResult {
 }
 
 export const api = {
+  // Laptop fleet controller
+  listFleetNodes: () => fetchJSON<FleetNode[]>('/fleet/nodes'),
+  getFleetOverview: (nodes?: string[]) => fetchJSON<FleetNodeOverview[]>(`/fleet/overview${nodes?.length ? `?nodes=${encodeURIComponent(nodes.join(','))}` : ''}`, { timeoutMs: 60000 }),
+  checkFleetNode: (node: string) =>
+    fetchJSON<{ name: string; status: 'reachable' | 'unreachable'; detail: string | null }>(`/fleet/nodes/${encodeURIComponent(node)}/check`),
+  browseFleetDirectories: (node: string, path = '~', includeHidden = false) =>
+    fetchJSON<RemoteDirectoryListing>(`/fleet/nodes/${encodeURIComponent(node)}/directories?path=${encodeURIComponent(path)}&include_hidden=${includeHidden}`),
+
   // Agent Profiles & Providers
-  listProfiles: () => fetchJSON<AgentProfileInfo[]>('/agents/profiles'),
-  listProviders: () => fetchJSON<ProviderInfo[]>('/agents/providers'),
+  listProfiles: (node?: string | null) => fetchJSON<AgentProfileInfo[]>(nodeEndpoint('/agents/profiles', node)),
+  listProviders: (node?: string | null) => fetchJSON<ProviderInfo[]>(nodeEndpoint('/agents/providers', node)),
 
   // Settings
   getAgentDirs: () => fetchJSON<AgentDirsSettings>('/settings/agent-dirs'),
@@ -204,32 +246,37 @@ export const api = {
     }),
 
   // Sessions
-  listSessions: () => fetchJSON<Session[]>('/sessions'),
-  getSession: (name: string) => fetchJSON<SessionDetail>(`/sessions/${name}`),
-  createSession: (provider: string, agentProfile: string, sessionName?: string, workingDirectory?: string) =>
-    fetchJSON<Terminal>(`/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`, { method: 'POST', timeoutMs: 90000 }),
-  deleteSession: (name: string) => fetchJSON<{ success: boolean; deleted: string[]; errors: any[] }>(`/sessions/${name}`, { method: 'DELETE' }),
+  listSessions: (node?: string | null) => fetchJSON<Session[]>(nodeEndpoint('/sessions', node)),
+  getSession: (name: string, node?: string | null) => fetchJSON<SessionDetail>(nodeEndpoint(`/sessions/${name}`, node)),
+  createSession: (provider: string, agentProfile: string, sessionName?: string, workingDirectory?: string, node?: string | null, initialMessage?: string, useWorktree = false) =>
+    fetchJSON<Terminal>(nodeEndpoint(`/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}${useWorktree ? '&use_worktree=true' : ''}`, node), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(initialMessage ? { initial_message: initialMessage } : {}),
+      timeoutMs: 90000,
+    }),
+  deleteSession: (name: string, node?: string | null) => fetchJSON<{ success: boolean; deleted: string[]; errors: any[] }>(nodeEndpoint(`/sessions/${name}`, node), { method: 'DELETE' }),
 
   // Terminals
-  getTerminalStatus: (id: string) =>
-    fetchJSON<Terminal>(`/terminals/${id}`).then(t => t.status),
-  getTerminalOutput: (id: string, mode: 'full' | 'last' = 'full') =>
-    fetchJSON<{ output: string; mode: string }>(`/terminals/${id}/output?mode=${mode}`),
-  sendInput: (id: string, message: string) =>
-    fetchJSON<{ success: boolean }>(`/terminals/${id}/input?message=${encodeURIComponent(message)}`, { method: 'POST' }),
-  exitTerminal: (id: string) =>
-    fetchJSON<{ success: boolean }>(`/terminals/${id}/exit`, { method: 'POST' }),
-  deleteTerminal: (id: string) => fetchJSON<{ success: boolean }>(`/terminals/${id}`, { method: 'DELETE' }),
-  getWorkingDirectory: (id: string) =>
-    fetchJSON<{ working_directory: string | null }>(`/terminals/${id}/working-directory`),
-  addTerminalToSession: (sessionName: string, provider: string, agentProfile: string, workingDirectory?: string) =>
-    fetchJSON<Terminal>(`/sessions/${sessionName}/terminals?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`, { method: 'POST', timeoutMs: 90000 }),
+  getTerminalStatus: (id: string, node?: string | null) =>
+    fetchJSON<Terminal>(nodeEndpoint(`/terminals/${id}`, node)).then(t => t.status),
+  getTerminalOutput: (id: string, mode: 'full' | 'last' = 'full', node?: string | null) =>
+    fetchJSON<{ output: string; mode: string }>(nodeEndpoint(`/terminals/${id}/output?mode=${mode}`, node)),
+  sendInput: (id: string, message: string, node?: string | null) =>
+    fetchJSON<{ success: boolean }>(nodeEndpoint(`/terminals/${id}/input?message=${encodeURIComponent(message)}`, node), { method: 'POST' }),
+  exitTerminal: (id: string, node?: string | null) =>
+    fetchJSON<{ success: boolean }>(nodeEndpoint(`/terminals/${id}/exit`, node), { method: 'POST' }),
+  deleteTerminal: (id: string, node?: string | null) => fetchJSON<{ success: boolean }>(nodeEndpoint(`/terminals/${id}`, node), { method: 'DELETE' }),
+  getWorkingDirectory: (id: string, node?: string | null) =>
+    fetchJSON<{ working_directory: string | null }>(nodeEndpoint(`/terminals/${id}/working-directory`, node)),
+  addTerminalToSession: (sessionName: string, provider: string, agentProfile: string, workingDirectory?: string, node?: string | null) =>
+    fetchJSON<Terminal>(nodeEndpoint(`/sessions/${sessionName}/terminals?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`, node), { method: 'POST', timeoutMs: 90000 }),
 
   // Inbox
-  getInboxMessages: (terminalId: string, limit?: number, status?: string) =>
-    fetchJSON<InboxMessage[]>(`/terminals/${terminalId}/inbox/messages?limit=${limit || 50}${status ? `&status=${status}` : ''}`),
-  sendInboxMessage: (receiverId: string, senderId: string, message: string) =>
-    fetchJSON<{ success: boolean }>(`/terminals/${receiverId}/inbox/messages?sender_id=${senderId}&message=${encodeURIComponent(message)}`, { method: 'POST' }),
+  getInboxMessages: (terminalId: string, limit?: number, status?: string, node?: string | null) =>
+    fetchJSON<InboxMessage[]>(nodeEndpoint(`/terminals/${terminalId}/inbox/messages?limit=${limit || 50}${status ? `&status=${status}` : ''}`, node)),
+  sendInboxMessage: (receiverId: string, senderId: string, message: string, node?: string | null) =>
+    fetchJSON<{ success: boolean }>(nodeEndpoint(`/terminals/${receiverId}/inbox/messages?sender_id=${senderId}&message=${encodeURIComponent(message)}`, node), { method: 'POST' }),
 
   // Flows
   listFlows: () => fetchJSON<Flow[]>('/flows'),
