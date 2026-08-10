@@ -1,21 +1,17 @@
 import { useEffect, useState, Suspense } from 'react'
-import { api } from './api'
 import { useStore } from './store'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { DashboardHome } from './components/DashboardHome'
 import { AgentPanel } from './components/AgentPanel'
-import { MemoryPanel } from './components/MemoryPanel'
 import { SettingsPanel } from './components/SettingsPanel'
-import { Bot, Home, Settings, Brain, CheckCircle, XCircle, Info, Wifi, WifiOff } from 'lucide-react'
+import { Bot, Home, Settings, CheckCircle, XCircle, Info, Wifi, WifiOff } from 'lucide-react'
 
-type TabKey = 'home' | 'agents' | 'settings' | 'memory'
+type TabKey = 'home' | 'agents' | 'settings'
 
-// Memory appended last so Alt+N numbering of existing tabs never shifts
 const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: 'home', label: 'Home', icon: <Home size={16} /> },
   { key: 'agents', label: 'Agents', icon: <Bot size={16} /> },
   { key: 'settings', label: 'Settings', icon: <Settings size={16} /> },
-  { key: 'memory', label: 'Memory', icon: <Brain size={16} /> },
 ]
 
 function Snackbar() {
@@ -51,17 +47,12 @@ function Snackbar() {
 
 export default function App() {
   const [tab, setTab] = useState<TabKey>('home')
-  // Default false (fail-closed): a dead backend hides the tab rather than showing a broken panel
-  const [memoryEnabled, setMemoryEnabled] = useState(false)
   const { sessions, connected, fetchSessions } = useStore()
 
-  const visibleTabs = TABS.filter(t => t.key !== 'memory' || memoryEnabled)
+  const visibleTabs = TABS
 
   useEffect(() => {
     fetchSessions()
-    api.getMemoryStatus()
-      .then(s => setMemoryEnabled(s.enabled))
-      .catch(() => {})
     const interval = setInterval(fetchSessions, 10000)
     return () => clearInterval(interval)
   }, [])
@@ -76,7 +67,7 @@ export default function App() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [memoryEnabled])
+  }, [])
 
   return (
     <div className="min-h-screen bg-[#0f0f14] text-gray-200">
@@ -142,7 +133,6 @@ export default function App() {
             {tab === 'home' && <DashboardHome onNavigate={(t) => setTab(t as TabKey)} />}
             {tab === 'agents' && <AgentPanel />}
             {tab === 'settings' && <SettingsPanel />}
-            {tab === 'memory' && <MemoryPanel />}
           </Suspense>
         </ErrorBoundary>
       </main>
