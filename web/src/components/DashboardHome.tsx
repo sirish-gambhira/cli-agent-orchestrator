@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useStore } from '../store'
-import { api, TerminalMeta } from '../api'
+import { api, FleetNodeOverview, TerminalMeta } from '../api'
 import { Bot, Zap, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, ChevronRight, ChevronDown, Users, Filter, ArrowDownUp } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
@@ -67,20 +67,53 @@ function StatusSummary({ counts }: { counts: Record<string, number> }) {
 interface SessionWithTerminals {
   name: string
   status: string
-  terminals: TerminalMeta[]
+  node: string | null
+  terminals: Array<TerminalMeta & { status?: string | null }>
+}
+
+interface LocatedTerminal {
+  terminal: TerminalMeta
+  node: string | null
+}
+
+const locationKey = (node: string | null, id: string) => `${node || 'local'}:${id}`
+
+export function sessionsFromFleet(overview: FleetNodeOverview[]): SessionWithTerminals[] {
+  return overview.flatMap(node => node.status === 'reachable'
+    ? node.sessions.map(session => ({
+        name: session.name,
+        status: session.status,
+        node: node.name,
+        terminals: session.terminals || [],
+      }))
+    : [])
+}
+
+export function mergeFleetSessions(
+  previous: Map<string, SessionWithTerminals[]>,
+  overview: FleetNodeOverview[],
+): Map<string, SessionWithTerminals[]> {
+  const next = new Map(previous)
+  overview.forEach(node => {
+    // An unreachable response is treated as a transient observation. Keep the
+    // last successful snapshot until the node can be queried again.
+    if (node.status !== 'reachable') return
+    next.set(node.name, sessionsFromFleet([node]))
+  })
+  return next
 }
 
 export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => void }) {
-  const { sessions, terminalStatuses, setTerminalStatus, clearTerminalStatuses, showSnackbar, deleteSession } = useStore()
+  const { terminalStatuses, setTerminalStatus, clearTerminalStatuses, showSnackbar } = useStore()
   const [profileCount, setProfileCount] = useState(0)
   const [sessionData, setSessionData] = useState<SessionWithTerminals[]>([])
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set())
-  const [liveTerminal, setLiveTerminal] = useState<{ id: string; provider?: string; agentProfile?: string | null } | null>(null)
-  const [pendingClose, setPendingClose] = useState<TerminalMeta | null>(null)
+  const [liveTerminal, setLiveTerminal] = useState<{ id: string; provider?: string; agentProfile?: string | null; node: string | null } | null>(null)
+  const [pendingClose, setPendingClose] = useState<LocatedTerminal | null>(null)
   const [closingTerminal, setClosingTerminal] = useState<string | null>(null)
-  const [inboxTerminalId, setInboxTerminalId] = useState<string | null>(null)
-  const [outputTerminalId, setOutputTerminalId] = useState<string | null>(null)
-  const [pendingExit, setPendingExit] = useState<TerminalMeta | null>(null)
+  const [inboxTerminal, setInboxTerminal] = useState<{ id: string; node: string | null } | null>(null)
+  const [outputTerminal, setOutputTerminal] = useState<{ id: string; node: string | null } | null>(null)
+  const [pendingExit, setPendingExit] = useState<LocatedTerminal | null>(null)
   const [exitingTerminal, setExitingTerminal] = useState<string | null>(null)
   const [sendInputOpen, setSendInputOpen] = useState<Record<string, boolean>>({})
   const [sendInputValues, setSendInputValues] = useState<Record<string, string>>({})
@@ -88,7 +121,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const [agentTypeFilter, setAgentTypeFilter] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
-  const [pendingDeleteSession, setPendingDeleteSession] = useState<string | null>(null)
+  const [pendingDeleteSession, setPendingDeleteSession] = useState<{ name: string; node: string | null } | null>(null)
   const [deletingSession, setDeletingSession] = useState(false)
   const seenSessionsRef = useRef<Set<string>>(new Set())
 
@@ -104,7 +137,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     const filtered = sessionData.filter(s =>
       s.terminals.length === 0 || s.terminals.some(t => {
         const matchAgent = !agentTypeFilter || (t.agent_profile || 'default') === agentTypeFilter
-        const matchStatus = !statusFilter || (terminalStatuses[t.id] || 'UNKNOWN') === statusFilter
+        const matchStatus = !statusFilter || (terminalStatuses[locationKey(s.node, t.id)] || t.status?.toUpperCase() || 'UNKNOWN') === statusFilter
         return matchAgent && matchStatus
       })
     )
@@ -115,63 +148,103 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     })
   }, [sessionData, agentTypeFilter, statusFilter, sortOrder, terminalStatuses])
 
-  const getStatusCounts = (terminals: TerminalMeta[]) => {
+  const getStatusCounts = (session: SessionWithTerminals) => {
     const counts: Record<string, number> = {}
-    terminals.forEach(t => {
-      const s = terminalStatuses[t.id] || 'UNKNOWN'
+    session.terminals.forEach(t => {
+      const s = terminalStatuses[locationKey(session.node, t.id)] || t.status?.toUpperCase() || 'UNKNOWN'
       counts[s] = (counts[s] || 0) + 1
     })
     return counts
   }
 
-  // Fetch session details with terminals
+  // Fetch laptop-local sessions and all reachable SSH nodes into one dashboard.
   useEffect(() => {
-    const fetchAll = async () => {
-      try {
-        const sessionDetails = await Promise.all(
-          sessions.map(async s => {
-            try {
-              const detail = await api.getSession(s.name)
-              return { name: s.name, status: s.status, terminals: detail.terminals || [] }
-            } catch {
-              return { name: s.name, status: s.status, terminals: [] }
-            }
-          })
-        )
-        setSessionData(sessionDetails)
-        // Auto-expand only newly seen sessions
-        const newNames = sessionDetails.map(s => s.name).filter(n => !seenSessionsRef.current.has(n))
-        newNames.forEach(n => seenSessionsRef.current.add(n))
-        if (newNames.length > 0) {
-          setExpandedSessions(prev => {
-            const next = new Set(prev)
-            newNames.forEach(n => next.add(n))
-            return next
-          })
-        }
-      } catch {}
+    let stopped = false
+    let localData: SessionWithTerminals[] = []
+    let fleetDataByNode = new Map<string, SessionWithTerminals[]>()
+    let monitoredNodes: string[] | undefined
+    let localTimer: ReturnType<typeof setTimeout>
+    let fleetTimer: ReturnType<typeof setTimeout>
+
+    const publish = () => {
+      if (stopped) return
+      const sessionDetails = [...localData, ...Array.from(fleetDataByNode.values()).flat()]
+      setSessionData(sessionDetails)
+      sessionDetails.forEach(session => session.terminals.forEach(terminal => {
+        if (terminal.status) setTerminalStatus(locationKey(session.node, terminal.id), terminal.status)
+      }))
+      const newKeys = sessionDetails.map(s => locationKey(s.node, s.name)).filter(key => !seenSessionsRef.current.has(key))
+      newKeys.forEach(key => seenSessionsRef.current.add(key))
+      if (newKeys.length > 0) {
+        setExpandedSessions(prev => {
+          const next = new Set(prev)
+          newKeys.forEach(key => next.add(key))
+          return next
+        })
+      }
     }
-    fetchAll()
-    const interval = setInterval(fetchAll, 5000)
-    return () => clearInterval(interval)
-  }, [sessions.map(s => s.id).join(',')])
+
+    const fetchLocal = async () => {
+      try {
+        const localSessions = await api.listSessions()
+        localData = await Promise.all(localSessions.map(async s => {
+          try {
+            const detail = await api.getSession(s.name)
+            return { name: s.name, status: s.status, node: null, terminals: detail.terminals || [] } as SessionWithTerminals
+          } catch {
+            return { name: s.name, status: s.status, node: null, terminals: [] } as SessionWithTerminals
+          }
+        }))
+        publish()
+      } catch {
+        // Preserve the last successful local snapshot during transient failures.
+      } finally {
+        if (!stopped) localTimer = setTimeout(fetchLocal, 5000)
+      }
+    }
+
+    const fetchFleet = async () => {
+      try {
+        const overview = await api.getFleetOverview(monitoredNodes)
+        fleetDataByNode = mergeFleetSessions(fleetDataByNode, overview)
+        const reachable = overview.filter(node => node.status === 'reachable').map(node => node.name)
+        if (reachable.length > 0) {
+          monitoredNodes = Array.from(new Set([...(monitoredNodes || []), ...reachable]))
+        }
+        publish()
+      } catch {
+        // Preserve the last successful fleet snapshot during transient failures.
+      } finally {
+        if (!stopped) fleetTimer = setTimeout(fetchFleet, 10000)
+      }
+    }
+
+    fetchLocal()
+    fetchFleet()
+    return () => {
+      stopped = true
+      clearTimeout(localTimer)
+      clearTimeout(fleetTimer)
+    }
+  }, [])
 
   // Poll statuses
   useEffect(() => {
-    const allIds = sessionData.flatMap(s => s.terminals.map(t => t.id))
-    if (!allIds.length) return
-    clearTerminalStatuses(allIds)
+    const allTerminals = sessionData.flatMap(s => s.terminals.map(t => ({ id: t.id, node: s.node })))
+    const allKeys = allTerminals.map(t => locationKey(t.node, t.id))
+    if (!allKeys.length) return
+    clearTerminalStatuses(allKeys)
     const fetch = () => {
-      allIds.forEach(id => {
-        api.getTerminalStatus(id)
-          .then(status => { if (status) setTerminalStatus(id, status) })
+      allTerminals.forEach(({ id, node }) => {
+        api.getTerminalStatus(id, node)
+          .then(status => { if (status) setTerminalStatus(locationKey(node, id), status) })
           .catch(() => {})
       })
     }
     fetch()
     const interval = setInterval(fetch, 3000)
     return () => clearInterval(interval)
-  }, [sessionData.flatMap(s => s.terminals.map(t => t.id)).join(',')])
+  }, [sessionData.flatMap(s => s.terminals.map(t => locationKey(s.node, t.id))).join(',')])
 
   useEffect(() => {
     api.listProfiles().then(p => setProfileCount(p.length)).catch(() => {})
@@ -179,11 +252,12 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
 
   const handleDeleteTerminal = async () => {
     if (!pendingClose) return
-    setClosingTerminal(pendingClose.id)
+    const { terminal, node } = pendingClose
+    setClosingTerminal(terminal.id)
     try {
-      await api.deleteTerminal(pendingClose.id)
-      if (liveTerminal?.id === pendingClose.id) setLiveTerminal(null)
-      showSnackbar({ type: 'success', message: `Terminal ${pendingClose.id} closed` })
+      await api.deleteTerminal(terminal.id, node)
+      if (liveTerminal?.id === terminal.id && liveTerminal.node === node) setLiveTerminal(null)
+      showSnackbar({ type: 'success', message: `Terminal ${terminal.id} closed` })
     } catch {
       showSnackbar({ type: 'error', message: `Failed to close terminal` })
     }
@@ -193,9 +267,10 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
 
   const handleExitTerminal = async () => {
     if (!pendingExit) return
-    setExitingTerminal(pendingExit.id)
+    const { terminal, node } = pendingExit
+    setExitingTerminal(terminal.id)
     try {
-      await api.exitTerminal(pendingExit.id)
+      await api.exitTerminal(terminal.id, node)
       showSnackbar({ type: 'success', message: `Graceful exit sent` })
     } catch {
       showSnackbar({ type: 'error', message: `Failed to send exit` })
@@ -208,19 +283,24 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     if (!pendingDeleteSession) return
     setDeletingSession(true)
     try {
-      await deleteSession(pendingDeleteSession)
-    } catch {}
+      await api.deleteSession(pendingDeleteSession.name, pendingDeleteSession.node)
+      setSessionData(prev => prev.filter(session => !(session.name === pendingDeleteSession.name && session.node === pendingDeleteSession.node)))
+      showSnackbar({ type: 'success', message: `Deleted ${pendingDeleteSession.name}` })
+    } catch {
+      showSnackbar({ type: 'error', message: `Failed to delete ${pendingDeleteSession.name}` })
+    }
     setDeletingSession(false)
     setPendingDeleteSession(null)
   }
 
-  const handleSendInput = async (terminalId: string) => {
-    const message = (sendInputValues[terminalId] || '').trim()
+  const handleSendInput = async (terminalId: string, node: string | null) => {
+    const key = locationKey(node, terminalId)
+    const message = (sendInputValues[key] || '').trim()
     if (!message) return
-    setSendingInput(terminalId)
+    setSendingInput(key)
     try {
-      await api.sendInput(terminalId, message)
-      setSendInputValues(prev => ({ ...prev, [terminalId]: '' }))
+      await api.sendInput(terminalId, message, node)
+      setSendInputValues(prev => ({ ...prev, [key]: '' }))
       showSnackbar({ type: 'success', message: 'Message sent' })
     } catch {
       showSnackbar({ type: 'error', message: 'Failed to send message' })
@@ -228,11 +308,11 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     setSendingInput(null)
   }
 
-  const toggleSession = (name: string) => {
+  const toggleSession = (key: string) => {
     setExpandedSessions(prev => {
       const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -247,7 +327,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
               <Users size={20} className="text-emerald-400" />
             </div>
             <div>
-              <div className="text-2xl font-bold text-white">{sessions.length}</div>
+              <div className="text-2xl font-bold text-white">{sessionData.length}</div>
               <div className="text-xs text-gray-400 uppercase tracking-wide">Sessions</div>
             </div>
           </div>
@@ -344,18 +424,19 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       ) : (
         <div className="space-y-3">
           {filteredSessions.map(session => {
+            const sessionKey = locationKey(session.node, session.name)
             const visibleTerminals = session.terminals.filter(t => {
               const matchAgent = !agentTypeFilter || t.agent_profile === agentTypeFilter
-              const matchStatus = !statusFilter || (terminalStatuses[t.id] || 'UNKNOWN') === statusFilter
+              const matchStatus = !statusFilter || (terminalStatuses[locationKey(session.node, t.id)] || t.status?.toUpperCase() || 'UNKNOWN') === statusFilter
               return matchAgent && matchStatus
             })
-            const statusCounts = getStatusCounts(session.terminals)
+            const statusCounts = getStatusCounts(session)
             const sortedTerminals = [...visibleTerminals].sort((a, b) => {
               const ta = a.last_active ? new Date(a.last_active).getTime() : 0
               const tb = b.last_active ? new Date(b.last_active).getTime() : 0
               return sortOrder === 'desc' ? tb - ta : ta - tb
             })
-            const grouped: Record<string, TerminalMeta[]> = {}
+            const grouped: Record<string, Array<TerminalMeta & { status?: string | null }>> = {}
             sortedTerminals.forEach(t => {
               const key = t.agent_profile || 'default'
               ;(grouped[key] ??= []).push(t)
@@ -379,10 +460,10 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
             }, null)
 
             return (
-              <div key={session.name} className="bg-gray-800/60 border border-gray-700/50 rounded-xl overflow-hidden relative">
+              <div key={sessionKey} className="bg-gray-800/60 border border-gray-700/50 rounded-xl overflow-hidden relative">
                 {/* Delete session button */}
                 <button
-                  onClick={(e) => { e.stopPropagation(); setPendingDeleteSession(session.name) }}
+                  onClick={(e) => { e.stopPropagation(); setPendingDeleteSession({ name: session.name, node: session.node }) }}
                   className="absolute top-3 right-3 p-1.5 text-gray-600 hover:text-red-400 bg-gray-800/80 hover:bg-gray-700 rounded-lg transition-colors z-10"
                   title="Delete session"
                 >
@@ -390,11 +471,12 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                 </button>
 
                 {/* Session header */}
-                <button onClick={() => toggleSession(session.name)} className="w-full text-left p-4 pr-12 hover:bg-gray-800/40 transition-colors">
+                <button onClick={() => toggleSession(sessionKey)} className="w-full text-left p-4 pr-12 hover:bg-gray-800/40 transition-colors">
                   <div className="flex items-center gap-3">
-                    {expandedSessions.has(session.name) ? <ChevronDown size={14} className="text-gray-500" /> : <ChevronRight size={14} className="text-gray-500" />}
+                    {expandedSessions.has(sessionKey) ? <ChevronDown size={14} className="text-gray-500" /> : <ChevronRight size={14} className="text-gray-500" />}
                     <Users size={14} className="text-emerald-400" />
                     <span className="text-sm font-mono text-gray-200">{session.name}</span>
+                    <span className="text-[10px] font-mono bg-gray-700/60 text-cyan-300 px-1.5 py-0.5 rounded">{session.node || 'laptop'}</span>
                     <span className="text-xs text-gray-500">{session.terminals.length} agent{session.terminals.length !== 1 ? 's' : ''}</span>
                   </div>
                   <div className="ml-8 mt-1.5 flex flex-col gap-1">
@@ -412,7 +494,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                 </button>
 
                 {/* Terminals grouped by agent type */}
-                {expandedSessions.has(session.name) && (
+                {expandedSessions.has(sessionKey) && (
                   <div className="border-t border-gray-700/30 px-4 pb-4 space-y-3 pt-3">
                     {Object.entries(grouped).map(([agentType, terminals]) => (
                       <div key={agentType}>
@@ -433,15 +515,15 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                                     <TermIcon size={12} className="text-gray-500 shrink-0" />
                                     <span className="text-xs font-medium text-gray-300 truncate">{t.agent_profile || 'default'}</span>
                                     <span className="text-[10px] font-mono text-gray-600">{t.id.slice(0, 8)}</span>
-                                    <StatusBadge status={terminalStatuses[t.id] || null} />
+                                    <StatusBadge status={terminalStatuses[locationKey(session.node, t.id)] || t.status || null} />
                                     <span className="text-[10px] text-gray-600">{t.provider}</span>
                                   </div>
                                   <div className="flex items-center gap-1 shrink-0">
-                                    <button onClick={() => setInboxTerminalId(t.id)} className="p-1 text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Inbox"><Mail size={12} /></button>
-                                    <button onClick={() => setOutputTerminalId(t.id)} className="p-1 text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Output"><FileText size={12} /></button>
-                                    <button onClick={() => setLiveTerminal({ id: t.id, provider: t.provider, agentProfile: t.agent_profile })} className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-colors"><Monitor size={12} />Terminal</button>
-                                    <button onClick={() => setPendingExit(t)} disabled={exitingTerminal === t.id} className="p-1 text-gray-500 hover:text-amber-400 bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Graceful Exit"><LogOut size={12} /></button>
-                                    <button onClick={() => setPendingClose(t)} disabled={closingTerminal === t.id} className="p-1 text-gray-500 hover:text-red-400 bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Close"><Trash2 size={12} /></button>
+                                    <button onClick={() => setInboxTerminal({ id: t.id, node: session.node })} className="p-1 text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Inbox"><Mail size={12} /></button>
+                                    <button onClick={() => setOutputTerminal({ id: t.id, node: session.node })} className="p-1 text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Output"><FileText size={12} /></button>
+                                    <button onClick={() => setLiveTerminal({ id: t.id, provider: t.provider, agentProfile: t.agent_profile, node: session.node })} className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-colors"><Monitor size={12} />Terminal</button>
+                                    <button onClick={() => setPendingExit({ terminal: t, node: session.node })} disabled={exitingTerminal === t.id} className="p-1 text-gray-500 hover:text-amber-400 bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Graceful Exit"><LogOut size={12} /></button>
+                                    <button onClick={() => setPendingClose({ terminal: t, node: session.node })} disabled={closingTerminal === t.id} className="p-1 text-gray-500 hover:text-red-400 bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Close"><Trash2 size={12} /></button>
                                   </div>
                                 </div>
                                 {/* Timestamps */}
@@ -450,12 +532,12 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                                   {showActive && <span title={fmtAbs(t.last_active) || ''}>↻ {relActive}</span>}
                                 </div>
                                 {/* Quick Send */}
-                                {!sendInputOpen[t.id] ? (
-                                  <button onClick={() => setSendInputOpen(prev => ({ ...prev, [t.id]: true }))} className="text-[10px] text-gray-600 hover:text-gray-300 transition-colors">Message agent...</button>
+                                {!sendInputOpen[locationKey(session.node, t.id)] ? (
+                                  <button onClick={() => setSendInputOpen(prev => ({ ...prev, [locationKey(session.node, t.id)]: true }))} className="text-[10px] text-gray-600 hover:text-gray-300 transition-colors">Message agent...</button>
                                 ) : (
                                   <div className="flex items-center gap-1.5">
-                                    <input type="text" value={sendInputValues[t.id] || ''} onChange={e => setSendInputValues(prev => ({ ...prev, [t.id]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') handleSendInput(t.id) }} placeholder="Type a message..." className="flex-1 bg-gray-900 border border-gray-700 text-gray-200 text-[11px] font-mono rounded px-2 py-1 focus:border-emerald-500 focus:outline-none" autoFocus />
-                                    <button onClick={() => handleSendInput(t.id)} disabled={sendingInput === t.id || !(sendInputValues[t.id] || '').trim()} className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-[10px] font-medium rounded transition-colors"><Send size={10} /></button>
+                                    <input type="text" value={sendInputValues[locationKey(session.node, t.id)] || ''} onChange={e => setSendInputValues(prev => ({ ...prev, [locationKey(session.node, t.id)]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') handleSendInput(t.id, session.node) }} placeholder="Type a message..." className="flex-1 bg-gray-900 border border-gray-700 text-gray-200 text-[11px] font-mono rounded px-2 py-1 focus:border-emerald-500 focus:outline-none" autoFocus />
+                                    <button onClick={() => handleSendInput(t.id, session.node)} disabled={sendingInput === locationKey(session.node, t.id) || !(sendInputValues[locationKey(session.node, t.id)] || '').trim()} className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-[10px] font-medium rounded transition-colors"><Send size={10} /></button>
                                   </div>
                                 )}
                               </div>
@@ -473,18 +555,19 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       )}
 
       {/* Modals */}
-      {inboxTerminalId && <InboxPanel terminalId={inboxTerminalId} onClose={() => setInboxTerminalId(null)} />}
+      {inboxTerminal && <InboxPanel terminalId={inboxTerminal.id} node={inboxTerminal.node} onClose={() => setInboxTerminal(null)} />}
       {liveTerminal && (
-        <TerminalView terminalId={liveTerminal.id} provider={liveTerminal.provider} agentProfile={liveTerminal.agentProfile} onClose={() => setLiveTerminal(null)} />
+        <TerminalView terminalId={liveTerminal.id} provider={liveTerminal.provider} agentProfile={liveTerminal.agentProfile} node={liveTerminal.node} onClose={() => setLiveTerminal(null)} />
       )}
-      {outputTerminalId && <OutputViewer terminalId={outputTerminalId} onClose={() => setOutputTerminalId(null)} />}
+      {outputTerminal && <OutputViewer terminalId={outputTerminal.id} node={outputTerminal.node} onClose={() => setOutputTerminal(null)} />}
       <ConfirmModal
         open={!!pendingClose}
         title="Close Terminal"
         message="This will kill the tmux window and terminate the agent process."
         details={pendingClose ? [
-          { label: 'Terminal', value: `${pendingClose.agent_profile || 'default'} (${pendingClose.id})` },
-          { label: 'Session', value: pendingClose.tmux_session },
+          { label: 'Terminal', value: `${pendingClose.terminal.agent_profile || 'default'} (${pendingClose.terminal.id})` },
+          { label: 'Session', value: pendingClose.terminal.tmux_session },
+          { label: 'Node', value: pendingClose.node || 'laptop' },
         ] : []}
         confirmLabel="Close Terminal"
         variant="danger"
@@ -497,8 +580,9 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
         title="Graceful Exit"
         message="This will send the provider-specific exit command (e.g., /exit)."
         details={pendingExit ? [
-          { label: 'Terminal', value: `${pendingExit.agent_profile || 'default'} (${pendingExit.id})` },
-          { label: 'Provider', value: pendingExit.provider },
+          { label: 'Terminal', value: `${pendingExit.terminal.agent_profile || 'default'} (${pendingExit.terminal.id})` },
+          { label: 'Provider', value: pendingExit.terminal.provider },
+          { label: 'Node', value: pendingExit.node || 'laptop' },
         ] : []}
         confirmLabel="Send Exit"
         variant="warning"
@@ -511,7 +595,8 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
         title="Delete Session"
         message="This will terminate all agents in this session and remove it."
         details={pendingDeleteSession ? [
-          { label: 'Session', value: pendingDeleteSession },
+          { label: 'Session', value: pendingDeleteSession.name },
+          { label: 'Node', value: pendingDeleteSession.node || 'laptop' },
         ] : []}
         confirmLabel="Delete Session"
         variant="danger"

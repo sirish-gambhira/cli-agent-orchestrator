@@ -4,6 +4,7 @@ import { StatusBadge } from '../components/StatusBadge'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { FALLBACK_PROVIDERS } from '../components/AgentPanel'
+import { mergeFleetSessions, sessionsFromFleet } from '../components/DashboardHome'
 
 describe('StatusBadge', () => {
   it('renders idle status', () => {
@@ -178,5 +179,65 @@ describe('FALLBACK_PROVIDERS', () => {
     const effective = noProviders.length > 0 ? noProviders : FALLBACK_PROVIDERS.map(n => ({ name: n, binary: '', installed: true }))
     const names = effective.map(p => p.name)
     expect(names).toContain('opencode_cli')
+  })
+})
+
+describe('fleet dashboard aggregation', () => {
+  it('includes terminals from reachable nodes and preserves their node', () => {
+    const sessions = sessionsFromFleet([
+      {
+        name: 'secure-02',
+        status: 'reachable',
+        detail: null,
+        sessions: [{
+          id: 'cao-1',
+          name: 'cao-1',
+          status: 'detached',
+          terminals: [{
+            id: 'agent-1',
+            tmux_session: 'cao-1',
+            tmux_window: 'developer',
+            provider: 'claude_code',
+            agent_profile: 'developer',
+            created_at: null,
+            last_active: null,
+            status: 'completed',
+          }],
+        }],
+      },
+      { name: 'secure-03', status: 'unreachable', detail: 'offline', sessions: [] },
+    ])
+
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0].node).toBe('secure-02')
+    expect(sessions[0].terminals).toHaveLength(1)
+    expect(sessions[0].terminals[0].status).toBe('completed')
+  })
+
+  it('preserves the last successful snapshot when a node is temporarily unreachable', () => {
+    const previous = new Map([['secure-02', [{
+      name: 'cao-1',
+      status: 'detached',
+      node: 'secure-02',
+      terminals: [{ id: 'agent-1' } as any],
+    }]]])
+
+    const merged = mergeFleetSessions(previous, [
+      { name: 'secure-02', status: 'unreachable', detail: 'SSH timeout', sessions: [] },
+    ])
+
+    expect(merged.get('secure-02')).toEqual(previous.get('secure-02'))
+  })
+
+  it('removes stale sessions after a reachable node reports an empty list', () => {
+    const previous = new Map([['secure-02', [{
+      name: 'cao-1', status: 'detached', node: 'secure-02', terminals: [],
+    }]]])
+
+    const merged = mergeFleetSessions(previous, [
+      { name: 'secure-02', status: 'reachable', detail: null, sessions: [] },
+    ])
+
+    expect(merged.get('secure-02')).toEqual([])
   })
 })
