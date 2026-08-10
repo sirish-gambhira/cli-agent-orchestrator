@@ -49,7 +49,7 @@ class TestCreateTerminal:
     ):
         """Test creating terminal with new session."""
         mock_gen_id.return_value = "test1234"
-        mock_gen_session.return_value = "cao-session"
+        mock_gen_session.return_value = "tgt-session"
         mock_gen_window.return_value = "developer-abcd"
         mock_tmux.session_exists.return_value = False
         mock_load_profile.return_value = AgentProfile(name="developer", description="Developer")
@@ -61,6 +61,7 @@ class TestCreateTerminal:
         result = await create_terminal("kiro_cli", "developer", new_session=True)
 
         assert result.id == "test1234"
+        assert result.session_name == "tgt-session"
         mock_tmux.create_session.assert_called_once()
         mock_provider.initialize.assert_called_once()
 

@@ -2432,11 +2432,14 @@ async def create_session(
             # would become 68 chars and fail downstream validation. Check
             # the *effective* prefixed value here so the rejection happens
             # at the boundary with a clear message.
-            from cli_agent_orchestrator.constants import SESSION_PREFIX
+            from cli_agent_orchestrator.constants import (
+                MANAGED_SESSION_PREFIXES,
+                SESSION_PREFIX,
+            )
 
             effective = (
                 session_name
-                if session_name.startswith(SESSION_PREFIX)
+                if session_name.startswith(MANAGED_SESSION_PREFIXES)
                 else f"{SESSION_PREFIX}{session_name}"
             )
             validate_tmux_name(effective, "session_name")

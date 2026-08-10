@@ -43,6 +43,7 @@ from cli_agent_orchestrator.clients.database import (
 )
 from cli_agent_orchestrator.constants import (
     FIFO_DIR,
+    MANAGED_SESSION_PREFIXES,
     PIPE_LIVENESS_TAIL_LINES,
     SESSION_PREFIX,
     TERMINAL_LOG_DIR,
@@ -339,8 +340,10 @@ async def create_terminal(
 
         # Step 2: Create tmux session or window
         if new_session:
-            # Ensure session name has the CAO prefix for identification
-            if not session_name.startswith(SESSION_PREFIX):
+            # Preserve both legacy cao-* sessions and new tgt-* generated
+            # sessions. Only explicit unprefixed names receive the legacy
+            # normalization prefix.
+            if not session_name.startswith(MANAGED_SESSION_PREFIXES):
                 session_name = f"{SESSION_PREFIX}{session_name}"
 
             # Prevent duplicate sessions
