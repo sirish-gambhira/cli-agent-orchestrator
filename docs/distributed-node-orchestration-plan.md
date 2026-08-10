@@ -1,6 +1,6 @@
 # Remote Node Fleet MVP Plan
 
-Status: Reliable fleet-state transport implementation in progress on `feature/remote-node-fleet-mvp`
+Status: Reliable fleet-state transport implemented on `feature/remote-node-fleet-mvp`
 Created: 2026-08-10
 Scope: One laptop-hosted UI controlling independent CAO deployments on explicit SSH hosts
 
@@ -393,7 +393,7 @@ cd ~/Documents/cli-agent-orchestrator/web
 npm ci
 npm run build
 cd ..
-CAO_API_PORT=9890 uv run cao-server
+CAO_API_PORT=9890 CAO_FLEET_NODES=jbom-03,secure-02 uv run cao-server
 ```
 
 Open `http://127.0.0.1:9890`, choose **Agents**, and select an execution node.
