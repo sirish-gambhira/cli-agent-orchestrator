@@ -1157,7 +1157,7 @@ async def stream_local_fleet_state(websocket: WebSocket):
     last_heartbeat = 0.0
     try:
         while True:
-            sessions = await asyncio.to_thread(build_local_snapshot)
+            sessions = jsonable_encoder(await asyncio.to_thread(build_local_snapshot))
             encoded = json.dumps(sessions, sort_keys=True, separators=(",", ":"))
             now = asyncio.get_running_loop().time()
             if encoded != previous:
