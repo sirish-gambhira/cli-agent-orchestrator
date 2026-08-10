@@ -4,7 +4,7 @@ import { StatusBadge } from '../components/StatusBadge'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { FALLBACK_PROVIDERS } from '../components/AgentPanel'
-import { mergeFleetSessions, sessionsFromFleet } from '../components/DashboardHome'
+import { mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet } from '../components/DashboardHome'
 
 describe('StatusBadge', () => {
   it('renders idle status', () => {
@@ -239,5 +239,19 @@ describe('fleet dashboard aggregation', () => {
     ])
 
     expect(merged.get('secure-02')).toEqual([])
+  })
+
+  it('keeps cached sessions visible and labels stale nodes', () => {
+    const sessions = sessionsFromCachedFleet([{
+      name: 'secure-02',
+      status: 'stale',
+      sessions: [{ id: 'cao-1', name: 'cao-1', status: 'detached', terminals: [] }],
+      sequence: 5,
+      last_seen: '2026-08-10T00:00:00Z',
+      detail: 'reconnecting',
+    }])
+
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0].nodeStatus).toBe('stale')
   })
 })

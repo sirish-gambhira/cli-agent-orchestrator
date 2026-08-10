@@ -11,6 +11,7 @@ import signal
 import struct
 import subprocess
 import termios
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,6 +81,7 @@ from cli_agent_orchestrator.graph.providers import GraphProvider, get_provider
 # ("okf", "obsidian", "graphml"); get_sink resolves by name from the registry.
 from cli_agent_orchestrator.graph.sinks import get_sink
 from cli_agent_orchestrator.models.fleet import (
+    FleetCachedNode,
     FleetNode,
     FleetNodeCheck,
     FleetNodeOverview,
@@ -132,6 +134,13 @@ from cli_agent_orchestrator.services.fleet_service import (
     NodeUnavailableError,
     RemoteBrowseError,
     UnknownNodeError,
+)
+from cli_agent_orchestrator.services.fleet_state_service import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    PROTOCOL_VERSION,
+    SNAPSHOT_INTERVAL_SECONDS,
+    build_local_snapshot,
+    fleet_state_monitor,
 )
 from cli_agent_orchestrator.services.herdr_inbox_registry import set_herdr_inbox_service
 from cli_agent_orchestrator.services.herdr_inbox_service import HerdrInboxService
@@ -799,6 +808,7 @@ async def lifespan(app: FastAPI):
     status_monitor_task = asyncio.create_task(status_monitor.run())
     log_writer_task = asyncio.create_task(log_writer.run())
     inbox_service_task = asyncio.create_task(inbox_service.run(registry))
+    fleet_state_monitor.start()
     logger.info("Event bus consumers started (StatusMonitor, LogWriter, InboxService)")
 
     # Start ApprovalBridge when AG-UI surface is enabled
@@ -854,6 +864,8 @@ async def lifespan(app: FastAPI):
         logger.info("Herdr inbox service started")
 
     yield
+
+    await fleet_state_monitor.stop()
 
     # Stop herdr inbox service on shutdown
     if herdr_inbox_task is not None:
@@ -1112,6 +1124,67 @@ async def browse_fleet_node_directories(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except NodeUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@app.get("/fleet/state", response_model=List[FleetCachedNode])
+async def get_cached_fleet_state(
+    nodes: Optional[str] = Query(default=None, description="Optional comma-separated managed nodes"),
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> List[FleetCachedNode]:
+    """Return durable last-known state maintained by persistent node streams."""
+
+    selected = [item.strip() for item in nodes.split(",") if item.strip()] if nodes else None
+    try:
+        if selected:
+            fleet_state_monitor.ensure_nodes(selected)
+        return [FleetCachedNode.model_validate(item) for item in fleet_state_monitor.cache.view(selected)]
+    except UnknownNodeError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@app.websocket("/fleet/state/ws")
+async def stream_local_fleet_state(websocket: WebSocket):
+    """Stream sequenced authoritative snapshots and heartbeats to a controller."""
+
+    client_host = websocket.client.host if websocket.client else None
+    if client_host not in WS_ALLOWED_CLIENTS:
+        await websocket.close(code=4003, reason="Fleet state stream is restricted to loopback clients")
+        return
+    await websocket.accept()
+    sequence = 0
+    connection_id = uuid.uuid4().hex
+    previous: str | None = None
+    last_heartbeat = 0.0
+    try:
+        while True:
+            sessions = await asyncio.to_thread(build_local_snapshot)
+            encoded = json.dumps(sessions, sort_keys=True, separators=(",", ":"))
+            now = asyncio.get_running_loop().time()
+            if encoded != previous:
+                sequence += 1
+                await websocket.send_json({
+                    "protocol": PROTOCOL_VERSION,
+                    "connection_id": connection_id,
+                    "type": "snapshot",
+                    "sequence": sequence,
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                    "sessions": sessions,
+                })
+                previous = encoded
+                last_heartbeat = now
+            elif now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+                sequence += 1
+                await websocket.send_json({
+                    "protocol": PROTOCOL_VERSION,
+                    "connection_id": connection_id,
+                    "type": "heartbeat",
+                    "sequence": sequence,
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                })
+                last_heartbeat = now
+            await asyncio.sleep(SNAPSHOT_INTERVAL_SECONDS)
+    except (WebSocketDisconnect, RuntimeError):
+        return
 
 
 _FLEET_PROXY_ROOTS = frozenset(

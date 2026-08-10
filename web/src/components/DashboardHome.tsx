@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useStore } from '../store'
-import { api, FleetNodeOverview, TerminalMeta } from '../api'
+import { api, FleetCachedNode, FleetNodeOverview, TerminalMeta } from '../api'
 import { Bot, Zap, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, ChevronRight, ChevronDown, Users, Filter, ArrowDownUp } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
@@ -68,6 +68,7 @@ interface SessionWithTerminals {
   name: string
   status: string
   node: string | null
+  nodeStatus?: 'live' | 'stale' | 'offline'
   terminals: Array<TerminalMeta & { status?: string | null }>
 }
 
@@ -101,6 +102,16 @@ export function mergeFleetSessions(
     next.set(node.name, sessionsFromFleet([node]))
   })
   return next
+}
+
+export function sessionsFromCachedFleet(nodes: FleetCachedNode[]): SessionWithTerminals[] {
+  return nodes.flatMap(node => node.sessions.map(session => ({
+    name: session.name,
+    status: session.status,
+    node: node.name,
+    nodeStatus: node.status,
+    terminals: session.terminals || [],
+  })))
 }
 
 export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => void }) {
@@ -161,14 +172,13 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   useEffect(() => {
     let stopped = false
     let localData: SessionWithTerminals[] = []
-    let fleetDataByNode = new Map<string, SessionWithTerminals[]>()
-    let monitoredNodes: string[] | undefined
+    let fleetData: SessionWithTerminals[] = []
     let localTimer: ReturnType<typeof setTimeout>
     let fleetTimer: ReturnType<typeof setTimeout>
 
     const publish = () => {
       if (stopped) return
-      const sessionDetails = [...localData, ...Array.from(fleetDataByNode.values()).flat()]
+      const sessionDetails = [...localData, ...fleetData]
       setSessionData(sessionDetails)
       sessionDetails.forEach(session => session.terminals.forEach(terminal => {
         if (terminal.status) setTerminalStatus(locationKey(session.node, terminal.id), terminal.status)
@@ -205,12 +215,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
 
     const fetchFleet = async () => {
       try {
-        const overview = await api.getFleetOverview(monitoredNodes)
-        fleetDataByNode = mergeFleetSessions(fleetDataByNode, overview)
-        const reachable = overview.filter(node => node.status === 'reachable').map(node => node.name)
-        if (reachable.length > 0) {
-          monitoredNodes = Array.from(new Set([...(monitoredNodes || []), ...reachable]))
-        }
+        fleetData = sessionsFromCachedFleet(await api.getFleetState())
         publish()
       } catch {
         // Preserve the last successful fleet snapshot during transient failures.
@@ -476,7 +481,9 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                     {expandedSessions.has(sessionKey) ? <ChevronDown size={14} className="text-gray-500" /> : <ChevronRight size={14} className="text-gray-500" />}
                     <Users size={14} className="text-emerald-400" />
                     <span className="text-sm font-mono text-gray-200">{session.name}</span>
-                    <span className="text-[10px] font-mono bg-gray-700/60 text-cyan-300 px-1.5 py-0.5 rounded">{session.node || 'laptop'}</span>
+                    <span className={`text-[10px] font-mono bg-gray-700/60 px-1.5 py-0.5 rounded ${session.nodeStatus === 'offline' ? 'text-red-300' : session.nodeStatus === 'stale' ? 'text-amber-300' : 'text-cyan-300'}`}>
+                      {session.node || 'laptop'}{session.nodeStatus && session.nodeStatus !== 'live' ? ` · ${session.nodeStatus}` : ''}
+                    </span>
                     <span className="text-xs text-gray-500">{session.terminals.length} agent{session.terminals.length !== 1 ? 's' : ''}</span>
                   </div>
                   <div className="ml-8 mt-1.5 flex flex-col gap-1">

@@ -1,7 +1,7 @@
 # Remote Node Fleet MVP Plan
 
-Status: MVP implementation in progress on `feature/remote-node-fleet-mvp`  
-Created: 2026-08-10  
+Status: Reliable fleet-state transport implementation in progress on `feature/remote-node-fleet-mvp`
+Created: 2026-08-10
 Scope: One laptop-hosted UI controlling independent CAO deployments on explicit SSH hosts
 
 ## 1. Goal
@@ -40,6 +40,14 @@ Laptop CAO fleet controller and Web UI
 
 The laptop controller is an aggregator and proxy. It does not replace the
 node-local CAO server, terminal backend, provider adapters, or worktree service.
+
+Fleet state uses a persistent WebSocket per explicitly managed node over its
+long-lived SSH tunnel. Node streams send a full authoritative snapshot on
+connect and whenever state changes, plus sequenced heartbeats. The controller
+atomically persists the last successful snapshot and presents it as `live`,
+`stale`, or `offline`; a transport failure never means an agent was deleted.
+Periodic full snapshots provide reconciliation after dropped messages, node
+server restarts, or laptop controller restarts.
 
 Each node owns:
 
@@ -348,8 +356,9 @@ For each active or viewed node:
 A lost tunnel is not proof that an agent stopped. The controller must not delete
 remote sessions or worktrees during reconnection.
 
-The MVP can poll node status and session lists. A custom event-replay protocol
-is not required.
+Set `CAO_FLEET_NODES` on the laptop controller to the explicit comma-separated
+managed inventory (for example `jbom-03,secure-02`). Normal dashboard reads use
+the durable controller cache and never scan every alias in SSH config.
 
 ## 11. Security Boundaries
 
@@ -535,7 +544,8 @@ These are deliberately deferred until the MVP proves useful:
 - automatic node scheduling or capacity-based placement;
 - a dedicated CAO node daemon or custom persistent node protocol;
 - mTLS outside SSH tunnels;
-- durable event sequence/replay and exactly-once input delivery;
+- exactly-once input delivery (state delivery is sequenced and reconciled;
+  mutations remain ordinary request/response operations);
 - dynamic inventory from a CMDB, cloud provider, Slurm, or Kubernetes;
 - automatic repository cloning and caching;
 - Slack, Discord, Telegram, email, or server-side notifications while the

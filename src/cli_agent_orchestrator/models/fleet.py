@@ -28,6 +28,17 @@ class FleetNodeOverview(BaseModel):
     detail: Optional[str] = None
 
 
+class FleetCachedNode(BaseModel):
+    """Last-known state for one persistently monitored execution node."""
+
+    name: str
+    status: Literal["live", "stale", "offline"]
+    sessions: list[dict] = Field(default_factory=list)
+    sequence: int = 0
+    last_seen: Optional[str] = None
+    detail: Optional[str] = None
+
+
 class RemoteDirectoryEntry(BaseModel):
     """One child directory returned by the remote folder browser."""
 

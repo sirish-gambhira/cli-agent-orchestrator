@@ -8,6 +8,7 @@ from cli_agent_orchestrator.models.fleet import (
 )
 from cli_agent_orchestrator.services import fleet_service
 from cli_agent_orchestrator.services.fleet_service import FleetProxyResponse
+from cli_agent_orchestrator.services.fleet_state_service import fleet_state_monitor
 
 
 def test_list_fleet_nodes(client, monkeypatch):
@@ -81,6 +82,27 @@ def test_fleet_overview(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()[0]["sessions"][0]["id"] == "cao-one"
+
+
+def test_cached_fleet_state(client, monkeypatch):
+    monkeypatch.setattr(
+        fleet_state_monitor.cache,
+        "view",
+        lambda nodes: [{
+            "name": "secure-02",
+            "status": "stale",
+            "sessions": [{"id": "cao-one"}],
+            "sequence": 4,
+            "last_seen": "2026-08-10T00:00:00+00:00",
+            "detail": "reconnecting",
+        }],
+    )
+
+    response = client.get("/fleet/state")
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "stale"
+    assert response.json()[0]["sessions"] == [{"id": "cao-one"}]
 
 
 def test_proxy_forwards_allowlisted_remote_api(client, monkeypatch):

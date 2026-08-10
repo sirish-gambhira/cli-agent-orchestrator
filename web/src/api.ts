@@ -63,6 +63,15 @@ export interface FleetNodeOverview {
   detail: string | null
 }
 
+export interface FleetCachedNode {
+  name: string
+  status: 'live' | 'stale' | 'offline'
+  sessions: Array<Session & { terminals?: Array<TerminalMeta & { status?: string | null }> }>
+  sequence: number
+  last_seen: string | null
+  detail: string | null
+}
+
 export interface RemoteDirectoryEntry {
   name: string
   path: string
@@ -227,6 +236,7 @@ export const api = {
   // Laptop fleet controller
   listFleetNodes: () => fetchJSON<FleetNode[]>('/fleet/nodes'),
   getFleetOverview: (nodes?: string[]) => fetchJSON<FleetNodeOverview[]>(`/fleet/overview${nodes?.length ? `?nodes=${encodeURIComponent(nodes.join(','))}` : ''}`, { timeoutMs: 60000 }),
+  getFleetState: (nodes?: string[]) => fetchJSON<FleetCachedNode[]>(`/fleet/state${nodes?.length ? `?nodes=${encodeURIComponent(nodes.join(','))}` : ''}`),
   checkFleetNode: (node: string) =>
     fetchJSON<{ name: string; status: 'reachable' | 'unreachable'; detail: string | null }>(`/fleet/nodes/${encodeURIComponent(node)}/check`),
   browseFleetDirectories: (node: string, path = '~', includeHidden = false) =>
