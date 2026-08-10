@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from cli_agent_orchestrator.backends.registry import get_backend
 from cli_agent_orchestrator.clients.database import list_terminals_by_session
-from cli_agent_orchestrator.constants import SESSION_PREFIX
+from cli_agent_orchestrator.constants import MANAGED_SESSION_PREFIXES
 from cli_agent_orchestrator.models.inbox import OrchestrationType
 from cli_agent_orchestrator.models.kiro_engine import KiroEngine
 from cli_agent_orchestrator.models.terminal import Terminal
@@ -118,7 +118,7 @@ def list_sessions() -> List[Dict]:
     """List all sessions from tmux."""
     try:
         tmux_sessions = get_backend().list_sessions()
-        return [s for s in tmux_sessions if s["id"].startswith(SESSION_PREFIX)]
+        return [s for s in tmux_sessions if s["id"].startswith(MANAGED_SESSION_PREFIXES)]
     except Exception as e:
         logger.error(f"Failed to list sessions: {e}")
         return []

@@ -9,7 +9,7 @@ from typing import Optional, Union
 
 import requests
 
-from cli_agent_orchestrator.constants import API_BASE_URL, SESSION_PREFIX
+from cli_agent_orchestrator.constants import API_BASE_URL, GENERATED_SESSION_PREFIX
 from cli_agent_orchestrator.models.terminal import TerminalStatus
 
 logger = logging.getLogger(__name__)
@@ -50,9 +50,9 @@ def validate_tmux_name(name: str, kind: str = "name") -> str:
 
 
 def generate_session_name() -> str:
-    """Generate a unique session name with SESSION_PREFIX."""
+    """Generate a unique session name with the fleet session prefix."""
     session_uuid = uuid.uuid4().hex[:8]
-    return validate_tmux_name(f"{SESSION_PREFIX}{session_uuid}", "session_name")
+    return validate_tmux_name(f"{GENERATED_SESSION_PREFIX}{session_uuid}", "session_name")
 
 
 def generate_terminal_id() -> str:

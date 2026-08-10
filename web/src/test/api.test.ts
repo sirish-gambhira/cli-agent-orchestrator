@@ -46,6 +46,16 @@ describe('API wrapper', () => {
     expect(result).toEqual(providers)
   })
 
+  it('listProviderModels fetches the node-specific provider catalog', async () => {
+    mockResponse([{ id: 'auto', name: 'Auto' }])
+    const result = await api.listProviderModels('cursor_cli', 'jbom-03')
+    expect(result).toEqual([{ id: 'auto', name: 'Auto' }])
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/fleet/nodes/jbom-03/proxy/agents/providers/cursor_cli/models',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+  })
+
   it('createSession sends POST with params', async () => {
     const terminal = { id: 't1', name: 'dev', provider: 'kiro_cli', session_name: 's1' }
     mockResponse(terminal)
@@ -53,6 +63,15 @@ describe('API wrapper', () => {
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining('/sessions?provider=kiro_cli&agent_profile=developer'),
       expect.objectContaining({ method: 'POST' })
+    )
+  })
+
+  it('createSession includes a selected model', async () => {
+    mockResponse({ id: 't1' })
+    await api.createSession('cursor_cli', 'developer', undefined, undefined, 'jbom-03', undefined, false, 'gpt-5.3-codex')
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('model=gpt-5.3-codex'),
+      expect.objectContaining({ method: 'POST' }),
     )
   })
 

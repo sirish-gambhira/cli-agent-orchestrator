@@ -6,6 +6,7 @@ flow_daemon, lifespan, and the main() entry point.
 """
 
 import asyncio
+import subprocess
 from datetime import datetime
 from unittest.mock import ANY, AsyncMock, MagicMock, Mock, call, patch
 
@@ -123,17 +124,11 @@ class TestAgentProviders:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 9
+        assert len(data) == 3
         names = [p["name"] for p in data]
-        assert "kiro_cli" in names
         assert "claude_code" in names
         assert "codex" in names
-        assert "hermes" in names
-        assert "kimi_cli" in names
-        assert "copilot_cli" in names
-        assert "opencode_cli" in names
         assert "cursor_cli" in names
-        assert "antigravity_cli" in names
         for p in data:
             assert p["installed"] is True
 
@@ -151,7 +146,7 @@ class TestAgentProviders:
         """GET /agents/providers returns mixed installation status."""
 
         def mock_which(binary):
-            return "/usr/bin/kiro-cli" if binary == "kiro-cli" else None
+            return "/usr/bin/claude" if binary == "claude" else None
 
         with patch("shutil.which", side_effect=mock_which):
             response = client.get("/agents/providers")
@@ -159,12 +154,9 @@ class TestAgentProviders:
         assert response.status_code == 200
         data = response.json()
         providers_dict = {p["name"]: p for p in data}
-        assert providers_dict["kiro_cli"]["installed"] is True
-        assert providers_dict["claude_code"]["installed"] is False
+        assert providers_dict["claude_code"]["installed"] is True
         assert providers_dict["codex"]["installed"] is False
-        assert providers_dict["kimi_cli"]["installed"] is False
-        assert providers_dict["copilot_cli"]["installed"] is False
-        assert providers_dict["opencode_cli"]["installed"] is False
+        assert providers_dict["cursor_cli"]["installed"] is False
 
     def test_list_providers_has_binary_field(self, client):
         """Each provider entry has correct binary name."""
@@ -173,13 +165,28 @@ class TestAgentProviders:
 
         data = response.json()
         providers_dict = {p["name"]: p for p in data}
-        assert providers_dict["kiro_cli"]["binary"] == "kiro-cli"
         assert providers_dict["claude_code"]["binary"] == "claude"
+        assert providers_dict["cursor_cli"]["binary"] == "agent"
         assert providers_dict["codex"]["binary"] == "codex"
-        assert providers_dict["kimi_cli"]["binary"] == "kimi"
-        assert providers_dict["copilot_cli"]["binary"] == "copilot"
-        assert providers_dict["opencode_cli"]["binary"] == "opencode"
-        assert providers_dict["antigravity_cli"]["binary"] == "agy"
+
+    def test_list_cursor_models(self, client):
+        output = "Available models\n\nauto - Auto (default)\ngpt-5.3-codex - Codex 5.3\n"
+        completed = subprocess.CompletedProcess(["agent", "models"], 0, stdout=output, stderr="")
+        with patch("shutil.which", return_value="/usr/bin/agent"), patch(
+            "subprocess.run", return_value=completed
+        ):
+            response = client.get("/agents/providers/cursor_cli/models")
+
+        assert response.status_code == 200
+        assert response.json() == [
+            {"id": "auto", "name": "Auto (default)"},
+            {"id": "gpt-5.3-codex", "name": "Codex 5.3"},
+        ]
+
+    def test_non_cursor_provider_has_no_discoverable_models(self, client):
+        response = client.get("/agents/providers/codex/models")
+        assert response.status_code == 200
+        assert response.json() == []
 
 
 # ── Skills endpoint ──────────────────────────────────────────────────

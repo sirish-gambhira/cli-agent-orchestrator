@@ -25,8 +25,8 @@ class TestGenerateFunctions:
         """Test session name generation."""
         name = generate_session_name()
 
-        assert name.startswith("cao-")
-        assert len(name) == 12  # cao- (4) + uuid (8)
+        assert name.startswith("tgt-")
+        assert len(name) == 12  # tgt- (4) + uuid (8)
 
     def test_generate_session_name_unique(self):
         """Test session names are unique."""

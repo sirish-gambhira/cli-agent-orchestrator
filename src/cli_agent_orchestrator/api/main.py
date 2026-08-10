@@ -8,6 +8,7 @@ import os
 import pty
 import re
 import signal
+import shutil
 import struct
 import subprocess
 import termios
@@ -2183,24 +2184,61 @@ async def install_agent_profile_endpoint(
 @app.get("/agents/providers")
 async def list_providers_endpoint() -> List[Dict]:
     """List available providers with installation status."""
-    import shutil
-
     provider_binaries = {
-        "kiro_cli": "kiro-cli",
         "claude_code": "claude",
         "codex": "codex",
-        "hermes": "hermes",
-        "kimi_cli": "kimi",
-        "copilot_cli": "copilot",
-        "opencode_cli": "opencode",
         "cursor_cli": "agent",
-        "antigravity_cli": "agy",
     }
     result = []
     for provider, binary in provider_binaries.items():
         installed = shutil.which(binary) is not None
         result.append({"name": provider, "binary": binary, "installed": installed})
     return result
+
+
+@app.get("/agents/providers/{provider}/models")
+async def list_provider_models_endpoint(
+    provider: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> List[Dict[str, str]]:
+    """List models advertised by an installed provider CLI.
+
+    Cursor exposes a node- and account-specific catalog, so it must be queried
+    on the execution node instead of hard-coded in the laptop UI.
+    """
+    if provider != "cursor_cli":
+        return []
+
+    binary = shutil.which("agent")
+    if binary is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cursor CLI is not installed")
+
+    try:
+        completed = subprocess.run(
+            [binary, "models"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Cursor model discovery timed out",
+        ) from exc
+
+    if completed.returncode != 0:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Cursor CLI could not list models; verify that it is authenticated",
+        )
+
+    models: List[Dict[str, str]] = []
+    for line in completed.stdout.splitlines():
+        model_id, separator, label = line.strip().partition(" - ")
+        if separator and model_id and label:
+            models.append({"id": model_id, "name": label})
+    return models
 
 
 @app.get("/settings/agent-dirs")

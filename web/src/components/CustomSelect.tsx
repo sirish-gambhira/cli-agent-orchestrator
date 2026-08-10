@@ -15,10 +15,12 @@ interface CustomSelectProps {
   options: SelectOption[]
   placeholder?: string
   className?: string
+  searchable?: boolean
 }
 
-export function CustomSelect({ value, onChange, options, placeholder = 'Select...', className = '' }: CustomSelectProps) {
+export function CustomSelect({ value, onChange, options, placeholder = 'Select...', className = '', searchable = false }: CustomSelectProps) {
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -30,7 +32,10 @@ export function CustomSelect({ value, onChange, options, placeholder = 'Select..
   }, [])
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      setQuery('')
+      return
+    }
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false)
     }
@@ -39,16 +44,20 @@ export function CustomSelect({ value, onChange, options, placeholder = 'Select..
   }, [open])
 
   const selected = options.find(o => o.value === value)
+  const normalizedQuery = query.trim().toLowerCase()
+  const visibleOptions = normalizedQuery
+    ? options.filter(option => `${option.label} ${option.value} ${option.sublabel || ''}`.toLowerCase().includes(normalizedQuery))
+    : options
 
   // Group options
   const groups: { label: string | null; items: SelectOption[] }[] = []
   const seen = new Set<string>()
-  for (const opt of options) {
+  for (const opt of visibleOptions) {
     const g = opt.group || null
     const key = g || '__ungrouped__'
     if (!seen.has(key)) {
       seen.add(key)
-      groups.push({ label: g, items: options.filter(o => (o.group || null) === g) })
+      groups.push({ label: g, items: visibleOptions.filter(o => (o.group || null) === g) })
     }
   }
 
@@ -67,6 +76,17 @@ export function CustomSelect({ value, onChange, options, placeholder = 'Select..
 
       {open && (
         <div className="absolute z-50 mt-1 w-full bg-gray-900 border border-gray-700 rounded-lg shadow-xl shadow-black/30 max-h-64 overflow-y-auto">
+          {searchable && (
+            <div className="sticky top-0 z-10 bg-gray-900 p-2 border-b border-gray-700">
+              <input
+                autoFocus
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder="Search models..."
+                className="w-full bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-md px-2.5 py-2 focus:border-emerald-500 focus:outline-none"
+              />
+            </div>
+          )}
           {groups.map((group, gi) => (
             <div key={gi}>
               {group.label && (
@@ -83,6 +103,7 @@ export function CustomSelect({ value, onChange, options, placeholder = 'Select..
                     if (!opt.disabled) {
                       onChange(opt.value)
                       setOpen(false)
+                      setQuery('')
                     }
                   }}
                   className={`w-full text-left px-3 py-2 flex items-center justify-between transition-colors ${
@@ -104,7 +125,7 @@ export function CustomSelect({ value, onChange, options, placeholder = 'Select..
               ))}
             </div>
           ))}
-          {options.length === 0 && (
+          {visibleOptions.length === 0 && (
             <div className="px-3 py-4 text-sm text-gray-500 text-center">No options available</div>
           )}
         </div>

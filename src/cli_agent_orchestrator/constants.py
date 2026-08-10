@@ -51,6 +51,11 @@ def _env_positive_float(name: str, default: float) -> float:
 # =============================================================================
 # All CAO-managed tmux sessions are prefixed to distinguish them from user sessions
 SESSION_PREFIX = "cao-"
+# New automatically generated fleet sessions use the Together prefix. Keep
+# SESSION_PREFIX as the legacy/custom-name prefix so existing sessions remain
+# addressable and explicit names retain backwards-compatible normalization.
+GENERATED_SESSION_PREFIX = "tgt-"
+MANAGED_SESSION_PREFIXES = (SESSION_PREFIX, GENERATED_SESSION_PREFIX)
 
 # =============================================================================
 # Provider Configuration

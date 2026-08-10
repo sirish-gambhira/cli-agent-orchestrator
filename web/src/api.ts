@@ -174,6 +174,11 @@ export interface ProviderInfo {
   installed: boolean
 }
 
+export interface ProviderModelInfo {
+  id: string
+  name: string
+}
+
 export interface MemoryStatus {
   enabled: boolean
 }
@@ -245,6 +250,8 @@ export const api = {
   // Agent Profiles & Providers
   listProfiles: (node?: string | null) => fetchJSON<AgentProfileInfo[]>(nodeEndpoint('/agents/profiles', node)),
   listProviders: (node?: string | null) => fetchJSON<ProviderInfo[]>(nodeEndpoint('/agents/providers', node)),
+  listProviderModels: (provider: string, node?: string | null) =>
+    fetchJSON<ProviderModelInfo[]>(nodeEndpoint(`/agents/providers/${encodeURIComponent(provider)}/models`, node)),
 
   // Settings
   getAgentDirs: () => fetchJSON<AgentDirsSettings>('/settings/agent-dirs'),
@@ -258,8 +265,8 @@ export const api = {
   // Sessions
   listSessions: (node?: string | null) => fetchJSON<Session[]>(nodeEndpoint('/sessions', node)),
   getSession: (name: string, node?: string | null) => fetchJSON<SessionDetail>(nodeEndpoint(`/sessions/${name}`, node)),
-  createSession: (provider: string, agentProfile: string, sessionName?: string, workingDirectory?: string, node?: string | null, initialMessage?: string, useWorktree = false) =>
-    fetchJSON<Terminal>(nodeEndpoint(`/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}${useWorktree ? '&use_worktree=true' : ''}`, node), {
+  createSession: (provider: string, agentProfile: string, sessionName?: string, workingDirectory?: string, node?: string | null, initialMessage?: string, useWorktree = false, model?: string) =>
+    fetchJSON<Terminal>(nodeEndpoint(`/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}${useWorktree ? '&use_worktree=true' : ''}${model ? `&model=${encodeURIComponent(model)}` : ''}`, node), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(initialMessage ? { initial_message: initialMessage } : {}),

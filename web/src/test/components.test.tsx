@@ -144,15 +144,8 @@ describe('ConfirmModal', () => {
 })
 
 describe('FALLBACK_PROVIDERS', () => {
-  it('includes opencode_cli', () => {
-    expect(FALLBACK_PROVIDERS).toContain('opencode_cli')
-  })
-
-  it('includes all known providers', () => {
-    const expected = ['kiro_cli', 'claude_code', 'q_cli', 'codex', 'gemini_cli', 'hermes', 'kimi_cli', 'copilot_cli', 'opencode_cli', 'cursor_cli']
-    for (const p of expected) {
-      expect(FALLBACK_PROVIDERS).toContain(p)
-    }
+  it('contains only the fleet MVP providers', () => {
+    expect(FALLBACK_PROVIDERS).toEqual(['cursor_cli', 'claude_code', 'codex'])
   })
 
   it('maps to enabled select options with default underscore label', () => {
@@ -162,23 +155,18 @@ describe('FALLBACK_PROVIDERS', () => {
       label: n.replace(/_/g, ' '),
       disabled: false,
     }))
-    const opencodeOption = options.find(o => o.value === 'opencode_cli')
-    expect(opencodeOption).toBeDefined()
-    // opencode_cli uses the default underscore-to-space replacement
-    expect(opencodeOption!.label).toBe('opencode cli')
-    expect(opencodeOption!.disabled).toBe(false)
-
-    const kiroOption = options.find(o => o.value === 'kiro_cli')
-    expect(kiroOption).toBeDefined()
-    expect(kiroOption!.label).toBe('kiro cli')
+    const cursorOption = options.find(o => o.value === 'cursor_cli')
+    expect(cursorOption).toBeDefined()
+    expect(cursorOption!.label).toBe('cursor cli')
+    expect(cursorOption!.disabled).toBe(false)
   })
 
-  it('provides an opencode_cli option on empty providers', () => {
+  it('provides the supported options on an empty provider response', () => {
     // Simulates: when providers.length === 0, fallback is used
     const noProviders: any[] = []
     const effective = noProviders.length > 0 ? noProviders : FALLBACK_PROVIDERS.map(n => ({ name: n, binary: '', installed: true }))
     const names = effective.map(p => p.name)
-    expect(names).toContain('opencode_cli')
+    expect(names).toEqual(['cursor_cli', 'claude_code', 'codex'])
   })
 })
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { api, AgentProfileInfo, FleetNodeOverview, ProviderInfo } from '../api'
+import { api, AgentProfileInfo, FleetNodeOverview, ProviderInfo, ProviderModelInfo } from '../api'
 import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Tag, Search, Mail, Plus, LogOut, Send, FileText, X } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
@@ -11,7 +11,7 @@ import { StatusBadge } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
 import { RemoteDirectoryPicker } from './RemoteDirectoryPicker'
 
-export const FALLBACK_PROVIDERS = ['kiro_cli', 'claude_code', 'q_cli', 'codex', 'gemini_cli', 'hermes', 'kimi_cli', 'copilot_cli', 'opencode_cli', 'cursor_cli']
+export const FALLBACK_PROVIDERS = ['cursor_cli', 'claude_code', 'codex']
 
 const SOURCE_LABELS: Record<string, string> = {
   'built-in': 'Built-in',
@@ -34,6 +34,9 @@ export function AgentPanel() {
   const [profiles, setProfiles] = useState<AgentProfileInfo[]>([])
   const [loadingProfiles, setLoadingProfiles] = useState(true)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [models, setModels] = useState<ProviderModelInfo[]>([])
+  const [model, setModel] = useState('')
+  const [loadingModels, setLoadingModels] = useState(false)
 
   useEffect(() => {
     setProviders([])
@@ -46,6 +49,23 @@ export function AgentPanel() {
       })
       .catch(() => {})
   }, [selectedNode])
+
+  useEffect(() => {
+    setModels([])
+    setModel('')
+    if (provider !== 'cursor_cli') {
+      setLoadingModels(false)
+      return
+    }
+    setLoadingModels(true)
+    api.listProviderModels(provider, selectedNode)
+      .then(items => {
+        setModels(items)
+        setModel(items.find(item => item.id === 'auto')?.id || items[0]?.id || '')
+      })
+      .catch(() => setModels([]))
+      .finally(() => setLoadingModels(false))
+  }, [provider, selectedNode])
   const [pendingClose, setPendingClose] = useState<TerminalMeta | null>(null)
   const [closingTerminal, setClosingTerminal] = useState<string | null>(null)
   const [sessionSearch, setSessionSearch] = useState('')
@@ -197,13 +217,14 @@ export function AgentPanel() {
     creatingRef.current = true
     setCreating(true)
     try {
-      await createSession(provider, profile.trim(), workingDirectory.trim() || undefined, sessionName.trim() || undefined, initialTask.trim() || undefined, useWorktree)
+      await createSession(provider, profile.trim(), workingDirectory.trim() || undefined, sessionName.trim() || undefined, initialTask.trim() || undefined, useWorktree, model || undefined)
       setShowSpawnModal(false)
       setProfile('')
       setWorkingDirectory('')
       setSessionName('')
       setInitialTask('')
       setUseWorktree(false)
+      setModel('')
     } finally {
       setCreating(false)
       creatingRef.current = false
@@ -705,6 +726,27 @@ export function AgentPanel() {
                 )}
               </div>
 
+              {provider === 'cursor_cli' && (
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Cursor Model</label>
+                  {loadingModels ? (
+                    <div className="bg-gray-900 border border-gray-700 text-gray-500 text-sm rounded-lg px-3 py-2.5">Loading models from {selectedNode || 'this laptop'}...</div>
+                  ) : models.length > 0 ? (
+                    <CustomSelect
+                      value={model}
+                      onChange={setModel}
+                      placeholder="Select a Cursor model..."
+                      searchable
+                      options={models.map(item => ({ value: item.id, label: item.name, sublabel: item.id }))}
+                    />
+                  ) : (
+                    <div className="bg-red-950/20 border border-red-900/40 text-red-300 text-xs rounded-lg px-3 py-2.5">
+                      Models unavailable. Verify Cursor CLI is installed and authenticated on this node.
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Session Name <span className="text-gray-600">(optional)</span></label>
                 <div className="relative">
@@ -714,7 +756,7 @@ export function AgentPanel() {
                     value={sessionName}
                     onChange={e => setSessionName(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleCreate()}
-                    placeholder="my-session (or a random id like cao-a1b2c3d4)"
+                    placeholder="my-session (or a random id like tgt-a1b2c3d4)"
                     className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg pl-9 pr-3 py-2.5 focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
