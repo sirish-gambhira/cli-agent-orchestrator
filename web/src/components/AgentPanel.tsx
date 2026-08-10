@@ -364,7 +364,7 @@ export function AgentPanel() {
               className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
             >
               <Plus size={14} />
-              Spawn Agent
+              New Agent Session
             </button>
           </div>
         </div>
@@ -372,7 +372,7 @@ export function AgentPanel() {
           A session is a workspace where agents collaborate. Each session can have multiple agents that communicate via messages. Click a session to see its agents.
         </p>
         {sessions.length === 0 ? (
-          <p className="text-gray-500 text-sm">No active sessions. Spawn an agent above to create one.</p>
+          <p className="text-gray-500 text-sm">No active sessions. Create a new agent session above.</p>
         ) : (
           <div className="space-y-2">
             {sessions.filter(s => !sessionSearch || s.id.includes(sessionSearch) || s.name.includes(sessionSearch)).map(s => (
@@ -653,7 +653,7 @@ export function AgentPanel() {
         onCancel={() => setPendingExit(null)}
       />
 
-      {/* Spawn Agent Modal */}
+      {/* New Agent Session Modal */}
       {showSpawnModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowSpawnModal(false)} />
@@ -661,9 +661,9 @@ export function AgentPanel() {
             {/* Modal header */}
             <div className="flex items-center justify-between p-5 border-b border-gray-700/50">
               <div>
-                <h3 className="text-base font-semibold text-gray-200">Spawn Agent</h3>
+                <h3 className="text-base font-semibold text-gray-200">New Agent Session</h3>
                 <p className="text-xs text-gray-500 mt-1">
-                  Launch a new AI agent in its own isolated tmux session.
+                  Create a new tmux session containing one initial AI agent.
                 </p>
               </div>
               <button
@@ -851,7 +851,7 @@ export function AgentPanel() {
                 className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
               >
                 <Play size={14} />
-                {creating ? 'Spawning...' : 'Spawn Agent'}
+                {creating ? 'Creating...' : 'Create Agent Session'}
               </button>
             </div>
           </div>

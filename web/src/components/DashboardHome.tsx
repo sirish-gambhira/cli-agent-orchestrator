@@ -319,7 +319,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       {/* Quick Actions */}
       <div className="flex gap-3 flex-wrap">
         <button onClick={() => onNavigate('agents')} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors">
-          <Bot size={16} /> Spawn Agent
+          <Bot size={16} /> New Agent Session
         </button>
       </div>
 
@@ -372,7 +372,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
           {nonEmptySessionCount === 0 ? (
             <>
               <p className="text-gray-400 text-sm">No agents are running.</p>
-              <p className="text-gray-600 text-xs mt-1">Go to the <span className="text-emerald-400 cursor-pointer" onClick={() => onNavigate('agents')}>Agents tab</span> to spawn your first agent.</p>
+              <p className="text-gray-600 text-xs mt-1">Go to the <span className="text-emerald-400 cursor-pointer" onClick={() => onNavigate('agents')}>Agents tab</span> to create your first agent session.</p>
             </>
           ) : (
             <p className="text-gray-400 text-sm">No agents match the current filter.</p>
