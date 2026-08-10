@@ -71,6 +71,7 @@ to its provider and terminal code.
 
 The MVP does not include:
 
+- scheduled flows or the Flows UI (deferred until the core fleet task surface is stable);
 - automatic node selection or scheduling;
 - a supervisor on one node delegating workers to another node;
 - cross-node `handoff`, `assign`, or agent inbox routing;
@@ -539,6 +540,7 @@ input and can open its terminal directly.
 
 These are deliberately deferred until the MVP proves useful:
 
+- scheduled and reusable flows;
 - cross-node `assign`, `handoff`, callbacks, and supervisor/worker routing;
 - controller-owned global agent inbox;
 - automatic node scheduling or capacity-based placement;

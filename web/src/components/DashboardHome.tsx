@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useStore } from '../store'
 import { api, FleetCachedNode, FleetNodeOverview, TerminalMeta } from '../api'
-import { Bot, Zap, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, ChevronRight, ChevronDown, Users, Filter, ArrowDownUp } from 'lucide-react'
+import { Bot, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, Users, Filter, ArrowDownUp } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
 import { InboxPanel } from './InboxPanel'
@@ -45,23 +45,6 @@ const STATUS_ACTIVE_BG: Record<string, string> = {
   ERROR: 'bg-red-900/40 border-red-500/50 text-red-300',
   COMPLETED: 'bg-purple-900/40 border-purple-500/50 text-purple-300',
   UNKNOWN: 'bg-gray-800/40 border-gray-500/50 text-gray-300',
-}
-
-function StatusSummary({ counts }: { counts: Record<string, number> }) {
-  return (
-    <div className="flex items-center gap-3 flex-wrap">
-      {STATUS_ORDER.filter(s => counts[s] > 0).map(s => {
-        const meta = STATUS_META[s]
-        return (
-          <span key={s} className="flex items-center gap-1 text-xs">
-            <span className={`w-1.5 h-1.5 rounded-full ${meta.dot} ${meta.pulse ? 'animate-pulse' : ''}`} />
-            <span className={meta.text}>{counts[s]}</span>
-            <span className="text-gray-500">{meta.label}</span>
-          </span>
-        )
-      })}
-    </div>
-  )
 }
 
 interface SessionWithTerminals {
@@ -118,7 +101,6 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const { terminalStatuses, setTerminalStatus, clearTerminalStatuses, showSnackbar } = useStore()
   const [profileCount, setProfileCount] = useState(0)
   const [sessionData, setSessionData] = useState<SessionWithTerminals[]>([])
-  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set())
   const [liveTerminal, setLiveTerminal] = useState<{ id: string; provider?: string; agentProfile?: string | null; node: string | null } | null>(null)
   const [pendingClose, setPendingClose] = useState<LocatedTerminal | null>(null)
   const [closingTerminal, setClosingTerminal] = useState<string | null>(null)
@@ -134,9 +116,9 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
   const [pendingDeleteSession, setPendingDeleteSession] = useState<{ name: string; node: string | null } | null>(null)
   const [deletingSession, setDeletingSession] = useState(false)
-  const seenSessionsRef = useRef<Set<string>>(new Set())
 
   const totalTerminals = sessionData.reduce((sum, s) => sum + s.terminals.length, 0)
+  const nonEmptySessionCount = sessionData.filter(session => session.terminals.length > 0).length
 
   const allAgentTypes = useMemo(() => {
     const types = new Set<string>()
@@ -146,7 +128,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
 
   const filteredSessions = useMemo(() => {
     const filtered = sessionData.filter(s =>
-      s.terminals.length === 0 || s.terminals.some(t => {
+      s.terminals.some(t => {
         const matchAgent = !agentTypeFilter || (t.agent_profile || 'default') === agentTypeFilter
         const matchStatus = !statusFilter || (terminalStatuses[locationKey(s.node, t.id)] || t.status?.toUpperCase() || 'UNKNOWN') === statusFilter
         return matchAgent && matchStatus
@@ -158,15 +140,6 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       return sortOrder === 'desc' ? latestB - latestA : latestA - latestB
     })
   }, [sessionData, agentTypeFilter, statusFilter, sortOrder, terminalStatuses])
-
-  const getStatusCounts = (session: SessionWithTerminals) => {
-    const counts: Record<string, number> = {}
-    session.terminals.forEach(t => {
-      const s = terminalStatuses[locationKey(session.node, t.id)] || t.status?.toUpperCase() || 'UNKNOWN'
-      counts[s] = (counts[s] || 0) + 1
-    })
-    return counts
-  }
 
   // Fetch laptop-local sessions and all reachable SSH nodes into one dashboard.
   useEffect(() => {
@@ -183,15 +156,6 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       sessionDetails.forEach(session => session.terminals.forEach(terminal => {
         if (terminal.status) setTerminalStatus(locationKey(session.node, terminal.id), terminal.status)
       }))
-      const newKeys = sessionDetails.map(s => locationKey(s.node, s.name)).filter(key => !seenSessionsRef.current.has(key))
-      newKeys.forEach(key => seenSessionsRef.current.add(key))
-      if (newKeys.length > 0) {
-        setExpandedSessions(prev => {
-          const next = new Set(prev)
-          newKeys.forEach(key => next.add(key))
-          return next
-        })
-      }
     }
 
     const fetchLocal = async () => {
@@ -313,15 +277,6 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     setSendingInput(null)
   }
 
-  const toggleSession = (key: string) => {
-    setExpandedSessions(prev => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
-
   return (
     <div className="space-y-6">
       {/* Stats Row */}
@@ -332,7 +287,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
               <Users size={20} className="text-emerald-400" />
             </div>
             <div>
-              <div className="text-2xl font-bold text-white">{sessionData.length}</div>
+              <div className="text-2xl font-bold text-white">{nonEmptySessionCount}</div>
               <div className="text-xs text-gray-400 uppercase tracking-wide">Sessions</div>
             </div>
           </div>
@@ -366,18 +321,15 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
         <button onClick={() => onNavigate('agents')} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors">
           <Bot size={16} /> Spawn Agent
         </button>
-        <button onClick={() => onNavigate('flows')} className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors">
-          <Zap size={16} /> Manage Flows
-        </button>
       </div>
 
       {/* Header with sort toggle */}
       <div className="mb-1">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">Active Sessions</h3>
+            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">Agents</h3>
             <p className="text-xs text-gray-500 mt-1">
-              Each session is a workspace where one or more AI agents run and collaborate.
+              All running agents across the laptop and managed nodes.
             </p>
           </div>
           <button onClick={() => setSortOrder(o => o === 'desc' ? 'asc' : 'desc')} className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition-colors">
@@ -417,13 +369,13 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       {filteredSessions.length === 0 ? (
         <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-8 text-center">
           <Bot size={32} className="mx-auto text-gray-600 mb-3" />
-          {sessionData.length === 0 ? (
+          {nonEmptySessionCount === 0 ? (
             <>
-              <p className="text-gray-400 text-sm">No active sessions.</p>
+              <p className="text-gray-400 text-sm">No agents are running.</p>
               <p className="text-gray-600 text-xs mt-1">Go to the <span className="text-emerald-400 cursor-pointer" onClick={() => onNavigate('agents')}>Agents tab</span> to spawn your first agent.</p>
             </>
           ) : (
-            <p className="text-gray-400 text-sm">No sessions match the current filter.</p>
+            <p className="text-gray-400 text-sm">No agents match the current filter.</p>
           )}
         </div>
       ) : (
@@ -435,37 +387,13 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
               const matchStatus = !statusFilter || (terminalStatuses[locationKey(session.node, t.id)] || t.status?.toUpperCase() || 'UNKNOWN') === statusFilter
               return matchAgent && matchStatus
             })
-            const statusCounts = getStatusCounts(session)
             const sortedTerminals = [...visibleTerminals].sort((a, b) => {
               const ta = a.last_active ? new Date(a.last_active).getTime() : 0
               const tb = b.last_active ? new Date(b.last_active).getTime() : 0
               return sortOrder === 'desc' ? tb - ta : ta - tb
             })
-            const grouped: Record<string, Array<TerminalMeta & { status?: string | null }>> = {}
-            sortedTerminals.forEach(t => {
-              const key = t.agent_profile || 'default'
-              ;(grouped[key] ??= []).push(t)
-            })
-            const typeSummary = Object.entries(
-              session.terminals.reduce<Record<string, number>>((acc, t) => {
-                const k = t.agent_profile || 'default'
-                acc[k] = (acc[k] || 0) + 1
-                return acc
-              }, {})
-            ).sort((a, b) => b[1] - a[1])
-            const sessionStart = session.terminals.reduce<string | null>((earliest, t) => {
-              if (!t.created_at) return earliest
-              if (!earliest) return t.created_at
-              return new Date(t.created_at) < new Date(earliest) ? t.created_at : earliest
-            }, null)
-            const sessionLastActive = session.terminals.reduce<string | null>((latest, t) => {
-              if (!t.last_active) return latest
-              if (!latest) return t.last_active
-              return new Date(t.last_active) > new Date(latest) ? t.last_active : latest
-            }, null)
-
             return (
-              <div key={sessionKey} className="bg-gray-800/60 border border-gray-700/50 rounded-xl overflow-hidden relative">
+              <div key={sessionKey} className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 relative">
                 {/* Delete session button */}
                 <button
                   onClick={(e) => { e.stopPropagation(); setPendingDeleteSession({ name: session.name, node: session.node }) }}
@@ -475,48 +403,22 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                   <Trash2 size={12} />
                 </button>
 
-                {/* Session header */}
-                <button onClick={() => toggleSession(sessionKey)} className="w-full text-left p-4 pr-12 hover:bg-gray-800/40 transition-colors">
-                  <div className="flex items-center gap-3">
-                    {expandedSessions.has(sessionKey) ? <ChevronDown size={14} className="text-gray-500" /> : <ChevronRight size={14} className="text-gray-500" />}
-                    <Users size={14} className="text-emerald-400" />
-                    <span className="text-sm font-mono text-gray-200">{session.name}</span>
-                    <span className={`text-[10px] font-mono bg-gray-700/60 px-1.5 py-0.5 rounded ${session.nodeStatus === 'offline' ? 'text-red-300' : session.nodeStatus === 'stale' ? 'text-amber-300' : 'text-cyan-300'}`}>
-                      {session.node || 'laptop'}{session.nodeStatus && session.nodeStatus !== 'live' ? ` · ${session.nodeStatus}` : ''}
-                    </span>
-                    <span className="text-xs text-gray-500">{session.terminals.length} agent{session.terminals.length !== 1 ? 's' : ''}</span>
-                  </div>
-                  <div className="ml-8 mt-1.5 flex flex-col gap-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {typeSummary.map(([type, count]) => (
-                        <span key={type} className="text-[10px] bg-gray-700/60 text-gray-400 px-1.5 py-0.5 rounded">{type}{count > 1 ? ` ×${count}` : ''}</span>
-                      ))}
-                    </div>
-                    <StatusSummary counts={statusCounts} />
-                    <div className="flex items-center gap-3 text-[10px] text-gray-600">
-                      {sessionStart && <span title={fmtAbs(sessionStart) || ''}>Started {fmtRel(sessionStart)}</span>}
-                      {sessionLastActive && <span title={fmtAbs(sessionLastActive) || ''}>Active {fmtRel(sessionLastActive)}</span>}
-                    </div>
-                  </div>
-                </button>
+                <div className="flex items-center gap-3 pr-8 mb-3">
+                  <Users size={14} className="text-emerald-400" />
+                  <span className="text-sm font-mono text-gray-200">{session.name}</span>
+                  <span className={`text-[10px] font-mono bg-gray-700/60 px-1.5 py-0.5 rounded ${session.nodeStatus === 'offline' ? 'text-red-300' : session.nodeStatus === 'stale' ? 'text-amber-300' : 'text-cyan-300'}`}>
+                    {session.node || 'laptop'}{session.nodeStatus && session.nodeStatus !== 'live' ? ` · ${session.nodeStatus}` : ''}
+                  </span>
+                  <span className="text-xs text-gray-500">{session.terminals.length} agent{session.terminals.length !== 1 ? 's' : ''}</span>
+                </div>
 
-                {/* Terminals grouped by agent type */}
-                {expandedSessions.has(sessionKey) && (
-                  <div className="border-t border-gray-700/30 px-4 pb-4 space-y-3 pt-3">
-                    {Object.entries(grouped).map(([agentType, terminals]) => (
-                      <div key={agentType}>
-                        <div className="flex items-center gap-2 mb-2">
-                          <Bot size={11} className="text-gray-500" />
-                          <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">{agentType}</span>
-                          <span className="text-[10px] text-gray-600">({terminals.length})</span>
-                        </div>
-                        <div className="space-y-1.5">
-                          {terminals.map(t => {
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
+                  {sortedTerminals.map(t => {
                             const relCreated = fmtRel(t.created_at)
                             const relActive = fmtRel(t.last_active)
                             const showActive = relActive && relActive !== relCreated
                             return (
-                              <div key={t.id} className="bg-gray-900/50 border border-gray-700/30 rounded-lg px-3 py-2 space-y-1.5">
+                              <div key={t.id} className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3 space-y-2">
                                 <div className="flex items-center justify-between">
                                   <div className="flex items-center gap-2 min-w-0">
                                     <TermIcon size={12} className="text-gray-500 shrink-0" />
@@ -549,12 +451,8 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                                 )}
                               </div>
                             )
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                  })}
+                </div>
               </div>
             )
           })}
