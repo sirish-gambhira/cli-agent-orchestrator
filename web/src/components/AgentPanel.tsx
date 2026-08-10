@@ -263,14 +263,6 @@ export function AgentPanel() {
     setAddingAgent(false)
   }
 
-  // Group profiles by source
-  const profilesBySource = profiles.reduce<Record<string, AgentProfileInfo[]>>((acc, p) => {
-    const key = p.source || 'unknown'
-    if (!acc[key]) acc[key] = []
-    acc[key].push(p)
-    return acc
-  }, {})
-
   return (
     <div className="space-y-6">
       <div className="bg-gray-800/60 border border-blue-700/30 rounded-xl p-5">
@@ -813,28 +805,6 @@ export function AgentPanel() {
                 </span>
               </label>
 
-              {/* Quick-pick profiles */}
-              {profiles.length > 0 && (
-                <div>
-                  <label className="block text-xs text-gray-500 mb-2">Quick pick</label>
-                  <div className="grid grid-cols-2 gap-1.5 max-h-40 overflow-y-auto">
-                    {profiles.slice(0, 12).map(p => (
-                      <button
-                        key={`${p.source}-${p.name}`}
-                        onClick={() => setProfile(p.name)}
-                        className={`text-left px-2.5 py-2 rounded-lg border text-xs transition-all ${
-                          profile === p.name
-                            ? 'bg-emerald-900/30 border-emerald-700/50 text-emerald-300'
-                            : 'bg-gray-900/50 border-gray-700/30 hover:bg-gray-800/80 text-gray-300'
-                        }`}
-                      >
-                        <span className="font-medium">{p.name}</span>
-                        <span className="text-[10px] text-gray-600 ml-1.5">{SOURCE_LABELS[p.source] || p.source}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Modal footer */}
