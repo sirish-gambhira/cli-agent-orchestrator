@@ -5,7 +5,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { canCreateSession, FALLBACK_PROVIDERS, showsAgentProfile } from '../components/AgentPanel'
 import { acknowledgeSessionDeletions, mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet } from '../components/DashboardHome'
-import { isMouseTrackingModeSequence, isReplicateShortcut } from '../components/TerminalView'
+import { isMouseTrackingModeSequence, isReplicateShortcut, resolveReplicationTarget } from '../components/TerminalView'
 
 describe('terminal text selection', () => {
   it('blocks provider mouse-tracking modes that disable xterm selection', () => {
@@ -27,6 +27,35 @@ describe('terminal shortcuts', () => {
 
   it('does not replace Control-D terminal input', () => {
     expect(isReplicateShortcut({ metaKey: false, ctrlKey: true, key: 'd', code: 'KeyD' })).toBe(false)
+  })
+})
+
+describe('terminal duplication', () => {
+  const availableProviders = [
+    { name: 'none', binary: '', installed: true },
+    { name: 'codex', binary: 'codex', installed: true },
+    { name: 'claude_code', binary: 'claude', installed: false },
+  ]
+
+  it('duplicates an available agent provider with its profile', () => {
+    expect(resolveReplicationTarget('codex', 'developer', availableProviders)).toEqual({
+      provider: 'codex', agentProfile: 'developer', fellBackToTerminal: false,
+    })
+  })
+
+  it('duplicates as a plain terminal when provider metadata is missing or unavailable', () => {
+    expect(resolveReplicationTarget(undefined, undefined, availableProviders)).toEqual({
+      provider: 'none', fellBackToTerminal: true,
+    })
+    expect(resolveReplicationTarget('claude_code', 'developer', availableProviders)).toEqual({
+      provider: 'none', fellBackToTerminal: true,
+    })
+  })
+
+  it('duplicates plain terminals without requiring an agent profile', () => {
+    expect(resolveReplicationTarget('none', null, availableProviders)).toEqual({
+      provider: 'none', fellBackToTerminal: false,
+    })
   })
 })
 

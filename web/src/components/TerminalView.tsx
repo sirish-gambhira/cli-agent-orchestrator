@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { Check, ChevronDown, ChevronUp, Copy, CopyPlus, X, Terminal as TermIcon } from 'lucide-react'
-import { api, Terminal as TerminalRecord } from '../api'
+import { api, ProviderInfo, Terminal as TerminalRecord } from '../api'
 
 interface TerminalViewProps {
   terminalId: string
@@ -31,6 +31,21 @@ export function isMouseTrackingModeSequence(params: (number | number[])[]): bool
 
 export function isReplicateShortcut(event: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'key' | 'code'>): boolean {
   return event.metaKey && !event.ctrlKey && (event.code === 'KeyD' || event.key.toLowerCase() === 'd')
+}
+
+export function resolveReplicationTarget(
+  provider: string | undefined,
+  agentProfile: string | null | undefined,
+  providers: ProviderInfo[],
+): { provider: string; agentProfile?: string; fellBackToTerminal: boolean } {
+  if (provider === 'none') return { provider: 'none', fellBackToTerminal: false }
+  const providerAvailable = Boolean(
+    provider && providers.some(item => item.name === provider && item.installed),
+  )
+  if (provider && providerAvailable && agentProfile) {
+    return { provider, agentProfile, fellBackToTerminal: false }
+  }
+  return { provider: 'none', fellBackToTerminal: true }
 }
 
 async function copyTerminalText(text: string): Promise<boolean> {
@@ -117,30 +132,38 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
 
   const replicateCurrentSession = useCallback(async () => {
     if (replicatingRef.current || replicateStatus === 'created') return
-    if (!provider || !agentProfile) {
-      setReplicateStatus('failed')
-      setReplicateMessage('Provider or profile is unavailable')
-      return
-    }
 
     replicatingRef.current = true
     setReplicateStatus('creating')
     setReplicateMessage(`Creating ${sessionName}-copy…`)
     try {
       const { working_directory: workingDirectory } = await api.getWorkingDirectory(terminalId, node)
+      if (!workingDirectory) throw new Error('Working directory is unavailable')
+      let availableProviders: ProviderInfo[] = []
+      try {
+        availableProviders = await api.listProviders(node)
+      } catch {
+        // Provider discovery should not prevent a useful duplicate. Without a
+        // verified provider, create a plain terminal in the same directory.
+      }
+      const target = resolveReplicationTarget(provider, agentProfile, availableProviders)
       const replica = await api.createSession(
-        provider,
-        agentProfile,
+        target.provider,
+        target.agentProfile,
         `${sessionName}-copy`,
-        workingDirectory || undefined,
+        workingDirectory,
         node,
         undefined,
         false,
         undefined,
-        true,
+        target.provider !== 'none',
       )
       setReplicateStatus('created')
-      setReplicateMessage(`Created ${replica.session_name}`)
+      setReplicateMessage(
+        target.fellBackToTerminal
+          ? `Created ${replica.session_name} as a plain terminal`
+          : `Created ${replica.session_name}`,
+      )
       setReplicaTerminal(replica)
       setActivePane('replica')
       onReplicated?.(replica)
