@@ -2,12 +2,15 @@
 
 import json
 import subprocess
+import threading
+import urllib.error
 
 import pytest
 
 from cli_agent_orchestrator.services.fleet_service import (
     FleetProxyResponse,
     FleetService,
+    NodeTunnelManager,
     RemoteBrowseError,
     UnknownNodeError,
     discover_ssh_aliases,
@@ -51,7 +54,113 @@ def test_check_node_uses_strict_noninteractive_ssh(tmp_path):
     assert calls[0][0][-2:] == ["jbom-02", "true"]
     assert "BatchMode=yes" in calls[0][0]
     assert "StrictHostKeyChecking=yes" in calls[0][0]
-    assert calls[0][1]["timeout"] == 7
+    assert calls[0][1]["timeout"] == 20
+
+
+def test_tunnel_waits_for_slow_ssh_authentication(monkeypatch):
+    clock = [0.0]
+
+    class Process:
+        terminated = False
+
+        def poll(self):
+            return 0 if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout):
+            assert timeout == 2
+            return 0
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def urlopen(_url, timeout):
+        assert timeout == 0.5
+        if clock[0] < 10:
+            raise urllib.error.URLError("tunnel not ready")
+        return Response()
+
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.fleet_service.time.monotonic", lambda: clock[0]
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.fleet_service.time.sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.fleet_service.urllib.request.urlopen", urlopen
+    )
+    monkeypatch.setattr(NodeTunnelManager, "_reserve_port", staticmethod(lambda: 43210))
+
+    manager = NodeTunnelManager(popen=lambda *_args, **_kwargs: Process())
+    tunnel = manager.ensure("jbom-03")
+
+    assert tunnel.local_port == 43210
+    assert clock[0] >= 10
+    manager.close()
+
+
+def test_concurrent_tunnel_callers_wait_for_startup(monkeypatch):
+    urlopen_entered = threading.Event()
+    release_urlopen = threading.Event()
+    second_finished = threading.Event()
+    process = type(
+        "Process",
+        (),
+        {
+            "poll": lambda self: None,
+            "terminate": lambda self: None,
+            "wait": lambda self, timeout: 0,
+        },
+    )()
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def urlopen(_url, timeout):
+        urlopen_entered.set()
+        assert release_urlopen.wait(timeout=1)
+        return Response()
+
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.fleet_service.urllib.request.urlopen", urlopen
+    )
+    monkeypatch.setattr(NodeTunnelManager, "_reserve_port", staticmethod(lambda: 43210))
+    manager = NodeTunnelManager(popen=lambda *_args, **_kwargs: process, startup_timeout=1)
+    results = []
+
+    first = threading.Thread(target=lambda: results.append(manager.ensure("jbom-03")))
+
+    def ensure_second():
+        results.append(manager.ensure("jbom-03"))
+        second_finished.set()
+
+    second = threading.Thread(target=ensure_second)
+    first.start()
+    assert urlopen_entered.wait(timeout=1)
+    second.start()
+    assert not second_finished.wait(timeout=0.05)
+    release_urlopen.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert len(results) == 2
+    assert results[0] is results[1]
+    manager.close()
 
 
 def test_unknown_node_never_invokes_ssh(tmp_path):

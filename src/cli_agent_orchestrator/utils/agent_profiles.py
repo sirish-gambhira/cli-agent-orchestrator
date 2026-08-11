@@ -69,6 +69,7 @@ def _discovery_fields(metadata: dict) -> Dict:
     caps_raw = metadata.get("capabilities")
     tags_raw = metadata.get("tags")
     role = metadata.get("role")
+    hidden = metadata.get("hidden") is True
 
     description = desc_raw[:_DESCRIPTION_MAX_LEN] if isinstance(desc_raw, str) else ""
     capabilities = (
@@ -86,6 +87,7 @@ def _discovery_fields(metadata: dict) -> Dict:
         "capabilities": capabilities,
         "tags": tags,
         "role": str(role) if isinstance(role, str) else "",
+        "hidden": hidden,
     }
 
 
@@ -273,7 +275,12 @@ def list_agent_profiles() -> List[Dict]:
         srcs = name_sources.get(profile_name, [])
         profile["duplicated_in"] = srcs[1:] if len(srcs) > 1 else []
 
-    return sorted(profiles.values(), key=lambda p: p["name"])
+    visible_profiles = []
+    for profile in profiles.values():
+        if profile.pop("hidden", False):
+            continue
+        visible_profiles.append(profile)
+    return sorted(visible_profiles, key=lambda p: p["name"])
 
 
 def parse_agent_profile_text(resolved_text: str, profile_name: str) -> AgentProfile:

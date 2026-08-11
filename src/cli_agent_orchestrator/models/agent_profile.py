@@ -54,6 +54,9 @@ class AgentProfile(BaseModel):
     # fields (pydantic silently drops undeclared keys).
     capabilities: Optional[List[str]] = None
     tags: Optional[List[str]] = None
+    # Operational profiles can remain loadable by name without appearing in
+    # discovery surfaces such as the Web UI and `cao profile list`.
+    hidden: bool = Field(default=False, exclude=True)
     # CAO-native. Host->guest path maps for container-backed agents. Consumed by
     # the provider layer to translate host paths (e.g. temp prompt/MCP files)
     # into the guest paths the containerized CLI sees; not passed to provider JSON.

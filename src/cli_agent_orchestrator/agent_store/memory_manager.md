@@ -2,6 +2,7 @@
 name: memory_manager
 description: Context-Manager Agent — curates memory injection for worker agents
 role: supervisor
+hidden: true
 mcpServers:
   cao-mcp-server:
     type: stdio

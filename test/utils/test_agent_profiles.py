@@ -8,10 +8,53 @@ import pytest
 
 from cli_agent_orchestrator.models.agent_profile import AgentProfile
 from cli_agent_orchestrator.utils.agent_profiles import (
+    list_agent_profiles,
     load_agent_profile,
     parse_agent_profile_text,
     resolve_provider,
 )
+
+
+def test_builtin_discovery_exposes_curated_profiles_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.utils.agent_profiles.LOCAL_AGENT_STORE_DIR", tmp_path / "local"
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.settings_service.get_agent_dirs", lambda: {}
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.settings_service.get_disabled_agent_dirs", lambda: []
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", lambda: []
+    )
+
+    builtins = {
+        profile["name"]
+        for profile in list_agent_profiles()
+        if profile["source"] == "built-in"
+    }
+
+    assert builtins == {"developer", "reviewer", "researcher", "quantization"}
+
+
+def test_hidden_builtin_profile_remains_loadable(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.utils.agent_profiles.LOCAL_AGENT_STORE_DIR", tmp_path / "local"
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.settings_service.get_agent_dirs", lambda: {}
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.settings_service.get_disabled_agent_dirs", lambda: []
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", lambda: []
+    )
+
+    profile = load_agent_profile("memory_manager")
+
+    assert profile.hidden is True
 
 
 class TestLoadAgentProfile:

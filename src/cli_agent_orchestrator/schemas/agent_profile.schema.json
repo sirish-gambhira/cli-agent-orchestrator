@@ -29,7 +29,11 @@
     },
     "role": {
       "type": "string",
-      "description": "Agent role. Built-in values: supervisor, developer, reviewer. Custom roles are also supported via settings.json."
+      "description": "Agent role. Built-in values: supervisor, developer, reviewer, researcher, quantization. Custom roles are also supported via settings.json."
+    },
+    "hidden": {
+      "type": "boolean",
+      "description": "Keep an operational profile loadable by name but omit it from discovery and profile-list surfaces."
     },
     "provider": {
       "type": "string",

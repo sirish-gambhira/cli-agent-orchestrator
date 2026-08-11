@@ -70,7 +70,9 @@ CAO ships several built-in profiles in the agent store:
 cao profile list
 ```
 
-Common built-ins: `code_supervisor`, `developer`, `reviewer`.
+Visible built-ins: `developer`, `reviewer`, `researcher`, and `quantization`.
+
+Operational profiles used by optional CAO features remain loadable by name but are hidden from profile discovery.
 
 ## Installing Profiles
 

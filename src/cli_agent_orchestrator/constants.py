@@ -600,12 +600,14 @@ MEMORY_ARCHIVE_MAX_GZIP_RATIO = 100  # reject > 100x expansion
 # Users can define custom roles in settings.json under "roles".
 # CAO vocabulary: execute_bash, fs_read, fs_write, fs_list, fs_*, web_fetch,
 # @builtin, @cao-mcp-server, discovery.
-# web_fetch is granted only to developer: supervisor/reviewer are intentionally
-# kept off the network (no WebFetch/WebSearch), shrinking their exfiltration surface.
+# web_fetch is granted to implementation and research roles. Supervisors and
+# reviewers stay off the network, shrinking their exfiltration surface.
 ROLE_TOOL_DEFAULTS = {
     "supervisor": ["@cao-mcp-server", "fs_read", "fs_list"],
     "reviewer": ["@builtin", "fs_read", "fs_list", "@cao-mcp-server"],
     "developer": ["@builtin", "fs_*", "execute_bash", "web_fetch", "@cao-mcp-server"],
+    "researcher": ["@builtin", "fs_read", "fs_list", "web_fetch", "@cao-mcp-server"],
+    "quantization": ["@builtin", "fs_*", "execute_bash", "web_fetch", "@cao-mcp-server"],
 }
 
 # Issue #432 design discussion (tedswinyar + klabulan, 2026-07-17/18): sibling

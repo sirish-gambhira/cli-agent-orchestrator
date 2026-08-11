@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SSH_CONFIG = Path("~/.ssh/config").expanduser()
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 15
+DEFAULT_SSH_READY_TIMEOUT_SECONDS = 20
 MAX_DIRECTORY_ENTRIES = 500
 DEFAULT_REMOTE_CAO_PORT = 9889
 
@@ -211,10 +212,13 @@ class NodeTunnelManager:
         self,
         remote_port: int = DEFAULT_REMOTE_CAO_PORT,
         popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+        startup_timeout: float = DEFAULT_SSH_READY_TIMEOUT_SECONDS,
     ) -> None:
         self.remote_port = remote_port
         self._popen = popen
+        self.startup_timeout = startup_timeout
         self._tunnels: dict[str, NodeTunnel] = {}
+        self._startup_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
         atexit.register(self.close)
 
@@ -228,60 +232,69 @@ class NodeTunnelManager:
         """Return a live tunnel, starting and health-checking it when needed."""
 
         with self._lock:
-            existing = self._tunnels.get(node)
-            if existing and existing.process.poll() is None:
-                return existing
-            if existing:
-                self._tunnels.pop(node, None)
+            startup_lock = self._startup_locks.setdefault(node, threading.Lock())
 
-            local_port = self._reserve_port()
-            args = [
-                "ssh",
-                "-N",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                f"ConnectTimeout={DEFAULT_CONNECT_TIMEOUT_SECONDS}",
-                "-o",
-                "ConnectionAttempts=1",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                # A Host alias may define unrelated LocalForward entries. One
-                # of those can be busy without invalidating our dynamic CAO
-                # forward; the /health probe below is its success criterion.
-                "-o",
-                "ExitOnForwardFailure=no",
-                "-L",
-                f"127.0.0.1:{local_port}:127.0.0.1:{self.remote_port}",
-                node,
-            ]
-            process = self._popen(
-                args,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+        # Only serialize startup for the same node. Different fleet nodes may
+        # still establish their tunnels concurrently.
+        with startup_lock:
+            with self._lock:
+                existing = self._tunnels.get(node)
+                if existing and existing.process.poll() is None:
+                    return existing
+                if existing:
+                    self._tunnels.pop(node, None)
+
+                local_port = self._reserve_port()
+                args = [
+                    "ssh",
+                    "-N",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    f"ConnectTimeout={DEFAULT_CONNECT_TIMEOUT_SECONDS}",
+                    "-o",
+                    "ConnectionAttempts=1",
+                    "-o",
+                    "StrictHostKeyChecking=yes",
+                    # A Host alias may define unrelated LocalForward entries. One
+                    # of those can be busy without invalidating our dynamic CAO
+                    # forward; the /health probe below is its success criterion.
+                    "-o",
+                    "ExitOnForwardFailure=no",
+                    "-L",
+                    f"127.0.0.1:{local_port}:127.0.0.1:{self.remote_port}",
+                    node,
+                ]
+                process = self._popen(
+                    args,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                tunnel = NodeTunnel(node=node, local_port=local_port, process=process)
+                self._tunnels[node] = tunnel
+
+            health_url = f"http://127.0.0.1:{local_port}/health"
+            last_error: Exception | None = None
+            deadline = time.monotonic() + self.startup_timeout
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    break
+                try:
+                    with urllib.request.urlopen(health_url, timeout=0.5) as response:
+                        if response.status == 200:
+                            return tunnel
+                except (OSError, urllib.error.URLError) as exc:
+                    last_error = exc
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(0.1, remaining))
+
+            self.drop(node)
+            detail = f": {last_error}" if last_error else ""
+            raise NodeUnavailableError(
+                f"CAO server is not reachable on {node}:127.0.0.1:{self.remote_port}{detail}"
             )
-            tunnel = NodeTunnel(node=node, local_port=local_port, process=process)
-            self._tunnels[node] = tunnel
-
-        health_url = f"http://127.0.0.1:{local_port}/health"
-        last_error: Exception | None = None
-        for _ in range(20):
-            if process.poll() is not None:
-                break
-            try:
-                with urllib.request.urlopen(health_url, timeout=0.5) as response:
-                    if response.status == 200:
-                        return tunnel
-            except (OSError, urllib.error.URLError) as exc:
-                last_error = exc
-            time.sleep(0.1)
-
-        self.drop(node)
-        detail = f": {last_error}" if last_error else ""
-        raise NodeUnavailableError(
-            f"CAO server is not reachable on {node}:127.0.0.1:{self.remote_port}{detail}"
-        )
 
     def drop(self, node: str) -> None:
         with self._lock:
@@ -348,7 +361,7 @@ class FleetService:
                 [*self._ssh_base_args(connect_timeout), node, "true"],
                 capture_output=True,
                 text=True,
-                timeout=connect_timeout + 2,
+                timeout=max(DEFAULT_SSH_READY_TIMEOUT_SECONDS, connect_timeout + 2),
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
