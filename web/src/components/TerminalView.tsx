@@ -169,6 +169,20 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
     }
   }, [replicationEnabled])
 
+  // A terminal is a full-screen modal. Prevent wheel gestures at the edge of
+  // its scrollback from chaining into the dashboard underneath it.
+  useEffect(() => {
+    if (embedded) return
+    const bodyOverflow = document.body.style.overflow
+    const rootOverflow = document.documentElement.style.overflow
+    document.body.style.overflow = 'hidden'
+    document.documentElement.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = bodyOverflow
+      document.documentElement.style.overflow = rootOverflow
+    }
+  }, [embedded])
+
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -205,6 +219,30 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
     term.loadAddon(fitAddon)
     term.open(el)
     terminalRef.current = term
+
+    // xterm's native wheel handler can leave an unconsumed gesture to bubble
+    // into the page (especially on macOS trackpads). Own the wheel at capture
+    // phase so each pane scrolls only its own xterm buffer.
+    let wheelRemainder = 0
+    const handleTerminalWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      if (!event.deltaY) return
+
+      const lines = event.deltaMode === 1
+        ? event.deltaY
+        : event.deltaMode === 2
+          ? event.deltaY * term.rows
+          : event.deltaY / 16
+      wheelRemainder += lines
+      const wholeLines = Math.trunc(wheelRemainder)
+      if (wholeLines !== 0) {
+        term.scrollLines(wholeLines)
+        wheelRemainder -= wholeLines
+      }
+    }
+    el.addEventListener('wheel', handleTerminalWheel, { capture: true, passive: false })
 
     const mouseModeSetDisposable = term.parser.registerCsiHandler(
       { prefix: '?', final: 'h' },
@@ -293,6 +331,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
       cancelAnimationFrame(initialFit)
       clearTimeout(resizeTimer)
       resizeObserver.disconnect()
+      el.removeEventListener('wheel', handleTerminalWheel, { capture: true })
       selectionDisposable.dispose()
       mouseModeSetDisposable.dispose()
       mouseModeResetDisposable.dispose()
@@ -395,7 +434,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
   if (embedded) return pane
 
   return (
-    <div ref={splitContainerRef} className="fixed inset-0 z-50 flex" style={{ background: '#0d1117' }}>
+    <div ref={splitContainerRef} className="fixed inset-0 z-50 flex overscroll-none" style={{ background: '#0d1117' }}>
       <div className="h-full min-w-0 shrink-0" style={{ flexBasis: replicaTerminal ? `${splitPercent}%` : '100%' }}>
         {pane}
       </div>
