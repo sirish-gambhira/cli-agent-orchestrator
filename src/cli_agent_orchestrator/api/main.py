@@ -7,8 +7,8 @@ import logging
 import os
 import pty
 import re
-import signal
 import shutil
+import signal
 import struct
 import subprocess
 import termios
@@ -157,6 +157,7 @@ from cli_agent_orchestrator.services.terminal_service import OutputMode, Termina
 from cli_agent_orchestrator.services.worktree_service import WorktreeError
 from cli_agent_orchestrator.telemetry import init_telemetry, shutdown_telemetry
 from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile, resolve_provider
+from cli_agent_orchestrator.utils.env import ensure_user_executable_path
 from cli_agent_orchestrator.utils.logging import install_access_log_redaction, setup_logging
 from cli_agent_orchestrator.utils.skills import (
     SkillNameError,
@@ -774,6 +775,11 @@ def _seed_default_skills_at_startup() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
+    # Provider CLIs installed for the current user commonly live here, while
+    # tmux/systemd/non-login SSH launchers often omit it from PATH.  Do this in
+    # lifespan (rather than only main()) so imported ASGI deployments are also
+    # covered and child provider processes inherit the corrected environment.
+    ensure_user_executable_path()
     logger.info("Starting CLI Agent Orchestrator server...")
     setup_logging()
     # Scrub credential query params (``?access_token=`` / ``?ticket=``) from

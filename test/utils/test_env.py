@@ -139,3 +139,34 @@ def test_list_env_vars_returns_current_contents(tmp_path, monkeypatch):
     monkeypatch.setattr(env_utils, "CAO_ENV_FILE", env_file)
 
     assert env_utils.list_env_vars() == {"API_KEY": "secret"}
+
+
+def test_ensure_user_executable_path_prepends_local_bin(tmp_path, monkeypatch):
+    """A minimal service PATH should still discover per-user CLI installs."""
+    user_bin = tmp_path / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+    monkeypatch.setattr(env_utils.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    assert env_utils.ensure_user_executable_path() is True
+    assert os.environ["PATH"].split(os.pathsep) == [str(user_bin), "/usr/bin", "/bin"]
+
+
+def test_ensure_user_executable_path_is_idempotent(tmp_path, monkeypatch):
+    """Repeated startup hooks must not duplicate the user bin directory."""
+    user_bin = tmp_path / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+    monkeypatch.setattr(env_utils.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PATH", f"{user_bin}{os.pathsep}/usr/bin")
+
+    assert env_utils.ensure_user_executable_path() is False
+    assert os.environ["PATH"] == f"{user_bin}{os.pathsep}/usr/bin"
+
+
+def test_ensure_user_executable_path_ignores_missing_directory(tmp_path, monkeypatch):
+    """Do not add a path that does not exist for the service account."""
+    monkeypatch.setattr(env_utils.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    assert env_utils.ensure_user_executable_path() is False
+    assert os.environ["PATH"] == "/usr/bin"
