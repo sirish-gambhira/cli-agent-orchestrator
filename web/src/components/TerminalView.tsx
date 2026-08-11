@@ -139,15 +139,6 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       setHasSelection(Boolean(selection))
     })
 
-    // Preserve select-to-copy while using xterm's native synchronous copy
-    // handler. The retained selection also covers mouse-up ordering differences
-    // between browsers.
-    const copySelection = () => {
-      const selection = term.getSelection() || selectedTextRef.current
-      if (selection) void copyTerminalSelection(term, selection).then(showCopyResult)
-    }
-    el.addEventListener('mouseup', copySelection)
-
     // Match native terminal conventions on Linux/Windows and macOS.
     term.attachCustomKeyEventHandler((e) => {
       const copyShortcut = (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'c')
@@ -194,7 +185,6 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       cancelAnimationFrame(initialFit)
       clearTimeout(resizeTimer)
       resizeObserver.disconnect()
-      el.removeEventListener('mouseup', copySelection)
       selectionDisposable.dispose()
       terminalRef.current = null
       selectedTextRef.current = ''
@@ -219,7 +209,7 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
         </div>
         <div className="flex items-center gap-3">
           <span className={`text-[10px] ${copyStatus === 'failed' ? 'text-red-400' : copyStatus === 'copied' ? 'text-emerald-400' : 'text-gray-600'}`}>
-            {copyStatus === 'copied' ? 'Copied' : copyStatus === 'failed' ? 'Copy failed' : 'Select to copy · ⌘C / Ctrl+Shift+C'}
+            {copyStatus === 'copied' ? 'Copied' : copyStatus === 'failed' ? 'Copy failed' : 'Select, then ⌘C / Ctrl+Shift+C'}
           </span>
           <button
             onMouseDown={e => e.preventDefault()}
