@@ -1,8 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { X, Terminal as TermIcon } from 'lucide-react'
+import { Check, Copy, X, Terminal as TermIcon } from 'lucide-react'
 
 interface TerminalViewProps {
   terminalId: string
@@ -12,12 +12,12 @@ interface TerminalViewProps {
   node?: string | null
 }
 
-async function copyTerminalText(text: string): Promise<void> {
-  if (!text) return
+async function copyTerminalText(text: string): Promise<boolean> {
+  if (!text) return false
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text)
-      return
+      return true
     }
   } catch {
     // Clipboard permissions vary across browsers and non-secure origins. Fall
@@ -31,12 +31,51 @@ async function copyTerminalText(text: string): Promise<void> {
   textarea.style.opacity = '0'
   document.body.appendChild(textarea)
   textarea.select()
-  document.execCommand('copy')
-  textarea.remove()
+  try {
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    textarea.remove()
+  }
+}
+
+async function copyTerminalSelection(term: Terminal, text: string): Promise<boolean> {
+  if (!text) return false
+
+  // xterm owns a synchronous `copy` event handler which writes its selection
+  // directly to ClipboardEvent.clipboardData. Focusing xterm before invoking
+  // copy avoids the permissions and secure-origin restrictions of the async
+  // Clipboard API in most browsers.
+  term.focus()
+  try {
+    if (document.execCommand('copy')) return true
+  } catch {
+    // Fall through for browsers that disable execCommand.
+  }
+  return copyTerminalText(text)
 }
 
 export function TerminalView({ terminalId, provider, agentProfile, onClose, node }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const terminalRef = useRef<Terminal | null>(null)
+  const selectedTextRef = useRef('')
+  const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const [hasSelection, setHasSelection] = useState(false)
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  const showCopyResult = useCallback((copied: boolean) => {
+    setCopyStatus(copied ? 'copied' : 'failed')
+    clearTimeout(copyFeedbackTimerRef.current)
+    copyFeedbackTimerRef.current = setTimeout(() => setCopyStatus('idle'), 1800)
+  }, [])
+
+  const copyCurrentSelection = useCallback(() => {
+    const term = terminalRef.current
+    const selection = term?.getSelection() || selectedTextRef.current
+    if (!term || !selection) return
+    void copyTerminalSelection(term, selection).then(showCopyResult)
+  }, [showCopyResult])
 
   useEffect(() => {
     const el = containerRef.current
@@ -66,6 +105,7 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(el)
+    terminalRef.current = term
 
     // Connect WebSocket
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -91,12 +131,20 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       term.write('\r\n\x1b[33m[Connection closed]\x1b[0m\r\n')
     }
 
-    // Copy only after the actual mouse-up gesture. Clipboard writes from
-    // xterm's selection-change callback are rejected by Safari and some
-    // Chromium permission modes because that callback fires while dragging.
-    const copySelection = () => {
+    // Keep the latest selection outside xterm so the header Copy button and
+    // mouse-up handler use the same text.
+    const selectionDisposable = term.onSelectionChange(() => {
       const selection = term.getSelection()
-      if (selection) void copyTerminalText(selection)
+      selectedTextRef.current = selection
+      setHasSelection(Boolean(selection))
+    })
+
+    // Preserve select-to-copy while using xterm's native synchronous copy
+    // handler. The retained selection also covers mouse-up ordering differences
+    // between browsers.
+    const copySelection = () => {
+      const selection = term.getSelection() || selectedTextRef.current
+      if (selection) void copyTerminalSelection(term, selection).then(showCopyResult)
     }
     el.addEventListener('mouseup', copySelection)
 
@@ -105,8 +153,10 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       const copyShortcut = (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'c')
         || (e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 'c')
       if (copyShortcut) {
-        const selection = term.getSelection()
-        if (selection) void copyTerminalText(selection)
+        const selection = term.getSelection() || selectedTextRef.current
+        if (selection && e.type === 'keydown') {
+          void copyTerminalSelection(term, selection).then(showCopyResult)
+        }
         return false
       }
       return true
@@ -145,10 +195,16 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       clearTimeout(resizeTimer)
       resizeObserver.disconnect()
       el.removeEventListener('mouseup', copySelection)
+      selectionDisposable.dispose()
+      terminalRef.current = null
+      selectedTextRef.current = ''
+      setHasSelection(false)
       ws.close()
       term.dispose()
     }
-  }, [terminalId, node])
+  }, [terminalId, node, showCopyResult])
+
+  useEffect(() => () => clearTimeout(copyFeedbackTimerRef.current), [])
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: '#0d1117' }}>
@@ -162,7 +218,19 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
           {agentProfile && <span className="text-xs text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded">{agentProfile}</span>}
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-[10px] text-gray-600">Select to copy · ⌘C / Ctrl+Shift+C</span>
+          <span className={`text-[10px] ${copyStatus === 'failed' ? 'text-red-400' : copyStatus === 'copied' ? 'text-emerald-400' : 'text-gray-600'}`}>
+            {copyStatus === 'copied' ? 'Copied' : copyStatus === 'failed' ? 'Copy failed' : 'Select to copy · ⌘C / Ctrl+Shift+C'}
+          </span>
+          <button
+            onMouseDown={e => e.preventDefault()}
+            onClick={copyCurrentSelection}
+            disabled={!hasSelection}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-300 bg-gray-800 hover:bg-gray-700 disabled:opacity-30 disabled:hover:bg-gray-800 rounded transition-colors"
+            title="Copy selected terminal text"
+          >
+            {copyStatus === 'copied' ? <Check size={13} /> : <Copy size={13} />}
+            Copy
+          </button>
           <button
             onClick={onClose}
             className="p-1 text-gray-500 hover:text-white transition-colors rounded"
