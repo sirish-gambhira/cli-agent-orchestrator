@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useStore } from '../store'
 import { api, FleetCachedNode, FleetNodeOverview, TerminalMeta } from '../api'
-import { Bot, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, Users, Filter, ArrowDownUp } from 'lucide-react'
+import { Bot, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, Filter, ArrowDownUp } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
 import { InboxPanel } from './InboxPanel'
@@ -102,8 +102,6 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const [profileCount, setProfileCount] = useState(0)
   const [sessionData, setSessionData] = useState<SessionWithTerminals[]>([])
   const [liveTerminal, setLiveTerminal] = useState<{ id: string; provider?: string; agentProfile?: string | null; node: string | null } | null>(null)
-  const [pendingClose, setPendingClose] = useState<LocatedTerminal | null>(null)
-  const [closingTerminal, setClosingTerminal] = useState<string | null>(null)
   const [inboxTerminal, setInboxTerminal] = useState<{ id: string; node: string | null } | null>(null)
   const [outputTerminal, setOutputTerminal] = useState<{ id: string; node: string | null } | null>(null)
   const [pendingExit, setPendingExit] = useState<LocatedTerminal | null>(null)
@@ -117,26 +115,28 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const [pendingDeleteSession, setPendingDeleteSession] = useState<{ name: string; node: string | null } | null>(null)
   const [deletingSession, setDeletingSession] = useState(false)
 
-  const totalTerminals = sessionData.reduce((sum, s) => sum + s.terminals.length, 0)
   const nonEmptySessionCount = sessionData.filter(session => session.terminals.length > 0).length
 
   const allAgentTypes = useMemo(() => {
     const types = new Set<string>()
-    sessionData.forEach(s => s.terminals.forEach(t => { types.add(t.agent_profile || 'default') }))
+    sessionData.forEach(session => {
+      const agent = session.terminals[0]
+      if (agent) types.add(agent.agent_profile || 'default')
+    })
     return [...types].sort()
   }, [sessionData])
 
   const filteredSessions = useMemo(() => {
-    const filtered = sessionData.filter(s =>
-      s.terminals.some(t => {
-        const matchAgent = !agentTypeFilter || (t.agent_profile || 'default') === agentTypeFilter
-        const matchStatus = !statusFilter || (terminalStatuses[locationKey(s.node, t.id)] || t.status?.toUpperCase() || 'UNKNOWN') === statusFilter
-        return matchAgent && matchStatus
-      })
-    )
+    const filtered = sessionData.filter(session => {
+      const agent = session.terminals[0]
+      if (!agent) return false
+      const matchAgent = !agentTypeFilter || (agent.agent_profile || 'default') === agentTypeFilter
+      const matchStatus = !statusFilter || (terminalStatuses[locationKey(session.node, agent.id)] || agent.status?.toUpperCase() || 'UNKNOWN') === statusFilter
+      return matchAgent && matchStatus
+    })
     return filtered.sort((a, b) => {
-      const latestA = Math.max(...a.terminals.map(t => t.last_active ? new Date(t.last_active).getTime() : 0))
-      const latestB = Math.max(...b.terminals.map(t => t.last_active ? new Date(t.last_active).getTime() : 0))
+      const latestA = a.terminals[0]?.last_active ? new Date(a.terminals[0].last_active!).getTime() : 0
+      const latestB = b.terminals[0]?.last_active ? new Date(b.terminals[0].last_active!).getTime() : 0
       return sortOrder === 'desc' ? latestB - latestA : latestA - latestB
     })
   }, [sessionData, agentTypeFilter, statusFilter, sortOrder, terminalStatuses])
@@ -153,9 +153,10 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       if (stopped) return
       const sessionDetails = [...localData, ...fleetData]
       setSessionData(sessionDetails)
-      sessionDetails.forEach(session => session.terminals.forEach(terminal => {
-        if (terminal.status) setTerminalStatus(locationKey(session.node, terminal.id), terminal.status)
-      }))
+      sessionDetails.forEach(session => {
+        const agent = session.terminals[0]
+        if (agent?.status) setTerminalStatus(locationKey(session.node, agent.id), agent.status)
+      })
     }
 
     const fetchLocal = async () => {
@@ -199,7 +200,9 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
 
   // Poll statuses
   useEffect(() => {
-    const allTerminals = sessionData.flatMap(s => s.terminals.map(t => ({ id: t.id, node: s.node })))
+    const allTerminals = sessionData.flatMap(session => session.terminals[0]
+      ? [{ id: session.terminals[0].id, node: session.node }]
+      : [])
     const allKeys = allTerminals.map(t => locationKey(t.node, t.id))
     if (!allKeys.length) return
     clearTerminalStatuses(allKeys)
@@ -213,26 +216,11 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     fetch()
     const interval = setInterval(fetch, 3000)
     return () => clearInterval(interval)
-  }, [sessionData.flatMap(s => s.terminals.map(t => locationKey(s.node, t.id))).join(',')])
+  }, [sessionData.map(s => s.terminals[0] ? locationKey(s.node, s.terminals[0].id) : '').join(',')])
 
   useEffect(() => {
     api.listProfiles().then(p => setProfileCount(p.length)).catch(() => {})
   }, [])
-
-  const handleDeleteTerminal = async () => {
-    if (!pendingClose) return
-    const { terminal, node } = pendingClose
-    setClosingTerminal(terminal.id)
-    try {
-      await api.deleteTerminal(terminal.id, node)
-      if (liveTerminal?.id === terminal.id && liveTerminal.node === node) setLiveTerminal(null)
-      showSnackbar({ type: 'success', message: `Terminal ${terminal.id} closed` })
-    } catch {
-      showSnackbar({ type: 'error', message: `Failed to close terminal` })
-    }
-    setClosingTerminal(null)
-    setPendingClose(null)
-  }
 
   const handleExitTerminal = async () => {
     if (!pendingExit) return
@@ -280,25 +268,14 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   return (
     <div className="space-y-6">
       {/* Stats Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl p-5 border border-gray-700/50">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-emerald-900/50 flex items-center justify-center">
-              <Users size={20} className="text-emerald-400" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-white">{nonEmptySessionCount}</div>
-              <div className="text-xs text-gray-400 uppercase tracking-wide">Sessions</div>
-            </div>
-          </div>
-        </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl p-5 border border-gray-700/50">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-cyan-900/50 flex items-center justify-center">
               <TermIcon size={20} className="text-cyan-400" />
             </div>
             <div>
-              <div className="text-2xl font-bold text-white">{totalTerminals}</div>
+              <div className="text-2xl font-bold text-white">{nonEmptySessionCount}</div>
               <div className="text-xs text-gray-400 uppercase tracking-wide">Running Agents</div>
             </div>
           </div>
@@ -365,7 +342,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
         })}
       </div>
 
-      {/* Sessions */}
+      {/* Agent session cards */}
       {filteredSessions.length === 0 ? (
         <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-8 text-center">
           <Bot size={32} className="mx-auto text-gray-600 mb-3" />
@@ -382,77 +359,48 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
         <div className="space-y-3">
           {filteredSessions.map(session => {
             const sessionKey = locationKey(session.node, session.name)
-            const visibleTerminals = session.terminals.filter(t => {
-              const matchAgent = !agentTypeFilter || t.agent_profile === agentTypeFilter
-              const matchStatus = !statusFilter || (terminalStatuses[locationKey(session.node, t.id)] || t.status?.toUpperCase() || 'UNKNOWN') === statusFilter
-              return matchAgent && matchStatus
-            })
-            const sortedTerminals = [...visibleTerminals].sort((a, b) => {
-              const ta = a.last_active ? new Date(a.last_active).getTime() : 0
-              const tb = b.last_active ? new Date(b.last_active).getTime() : 0
-              return sortOrder === 'desc' ? tb - ta : ta - tb
-            })
+            const agent = session.terminals[0]
+            if (!agent) return null
+            const agentKey = locationKey(session.node, agent.id)
+            const relCreated = fmtRel(agent.created_at)
+            const relActive = fmtRel(agent.last_active)
+            const showActive = relActive && relActive !== relCreated
             return (
-              <div key={sessionKey} className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 relative">
-                {/* Delete session button */}
-                <button
-                  onClick={(e) => { e.stopPropagation(); setPendingDeleteSession({ name: session.name, node: session.node }) }}
-                  className="absolute top-3 right-3 p-1.5 text-gray-600 hover:text-red-400 bg-gray-800/80 hover:bg-gray-700 rounded-lg transition-colors z-10"
-                  title="Delete session"
-                >
-                  <Trash2 size={12} />
-                </button>
+              <div key={sessionKey} className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Bot size={16} className="text-emerald-400 shrink-0" />
+                    <span className="text-sm font-semibold text-gray-200 truncate">{agent.agent_profile || 'default'}</span>
+                    <StatusBadge status={terminalStatuses[agentKey] || agent.status || null} />
+                    <span className="text-[10px] text-gray-500">{agent.provider}</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => setInboxTerminal({ id: agent.id, node: session.node })} className="p-1.5 text-gray-500 hover:text-white bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Inbox"><Mail size={13} /></button>
+                    <button onClick={() => setOutputTerminal({ id: agent.id, node: session.node })} className="p-1.5 text-gray-500 hover:text-white bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Output"><FileText size={13} /></button>
+                    <button onClick={() => setLiveTerminal({ id: agent.id, provider: agent.provider, agentProfile: agent.agent_profile, node: session.node })} className="flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-colors"><Monitor size={12} />Terminal</button>
+                    <button onClick={() => setPendingExit({ terminal: agent, node: session.node })} disabled={exitingTerminal === agent.id} className="p-1.5 text-gray-500 hover:text-amber-400 bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Graceful exit"><LogOut size={13} /></button>
+                    <button onClick={() => setPendingDeleteSession({ name: session.name, node: session.node })} className="p-1.5 text-gray-500 hover:text-red-400 bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Delete agent session"><Trash2 size={13} /></button>
+                  </div>
+                </div>
 
-                <div className="flex items-center gap-3 pr-8 mb-3">
-                  <Users size={14} className="text-emerald-400" />
-                  <span className="text-sm font-mono text-gray-200">{session.name}</span>
-                  <span className={`text-[10px] font-mono bg-gray-700/60 px-1.5 py-0.5 rounded ${session.nodeStatus === 'offline' ? 'text-red-300' : session.nodeStatus === 'stale' ? 'text-amber-300' : 'text-cyan-300'}`}>
+                <div className="flex items-center gap-3 text-[10px] text-gray-600 flex-wrap">
+                  <span className="font-mono">{session.name}</span>
+                  <span className={`font-mono bg-gray-700/60 px-1.5 py-0.5 rounded ${session.nodeStatus === 'offline' ? 'text-red-300' : session.nodeStatus === 'stale' ? 'text-amber-300' : 'text-cyan-300'}`}>
                     {session.node || 'laptop'}{session.nodeStatus && session.nodeStatus !== 'live' ? ` · ${session.nodeStatus}` : ''}
                   </span>
-                  <span className="text-xs text-gray-500">{session.terminals.length} agent{session.terminals.length !== 1 ? 's' : ''}</span>
+                  <span className="font-mono">{agent.id.slice(0, 8)}</span>
+                  {relCreated && <span title={fmtAbs(agent.created_at) || ''}>{relCreated}</span>}
+                  {showActive && <span title={fmtAbs(agent.last_active) || ''}>↻ {relActive}</span>}
                 </div>
 
-                <div className="divide-y divide-gray-700/40">
-                  {sortedTerminals.map(t => {
-                            const relCreated = fmtRel(t.created_at)
-                            const relActive = fmtRel(t.last_active)
-                            const showActive = relActive && relActive !== relCreated
-                            return (
-                              <div key={t.id} className="py-3 first:pt-0 last:pb-0 space-y-2">
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    <TermIcon size={12} className="text-gray-500 shrink-0" />
-                                    <span className="text-xs font-medium text-gray-300 truncate">{t.agent_profile || 'default'}</span>
-                                    <span className="text-[10px] font-mono text-gray-600">{t.id.slice(0, 8)}</span>
-                                    <StatusBadge status={terminalStatuses[locationKey(session.node, t.id)] || t.status || null} />
-                                    <span className="text-[10px] text-gray-600">{t.provider}</span>
-                                  </div>
-                                  <div className="flex items-center gap-1 shrink-0">
-                                    <button onClick={() => setInboxTerminal({ id: t.id, node: session.node })} className="p-1 text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Inbox"><Mail size={12} /></button>
-                                    <button onClick={() => setOutputTerminal({ id: t.id, node: session.node })} className="p-1 text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Output"><FileText size={12} /></button>
-                                    <button onClick={() => setLiveTerminal({ id: t.id, provider: t.provider, agentProfile: t.agent_profile, node: session.node })} className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-colors"><Monitor size={12} />Terminal</button>
-                                    <button onClick={() => setPendingExit({ terminal: t, node: session.node })} disabled={exitingTerminal === t.id} className="p-1 text-gray-500 hover:text-amber-400 bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Graceful Exit"><LogOut size={12} /></button>
-                                    <button onClick={() => setPendingClose({ terminal: t, node: session.node })} disabled={closingTerminal === t.id} className="p-1 text-gray-500 hover:text-red-400 bg-gray-800 hover:bg-gray-700 rounded transition-colors" title="Close"><Trash2 size={12} /></button>
-                                  </div>
-                                </div>
-                                {/* Timestamps */}
-                                <div className="flex items-center gap-3 text-[10px] text-gray-600">
-                                  {relCreated && <span title={fmtAbs(t.created_at) || ''}>{relCreated}</span>}
-                                  {showActive && <span title={fmtAbs(t.last_active) || ''}>↻ {relActive}</span>}
-                                </div>
-                                {/* Quick Send */}
-                                {!sendInputOpen[locationKey(session.node, t.id)] ? (
-                                  <button onClick={() => setSendInputOpen(prev => ({ ...prev, [locationKey(session.node, t.id)]: true }))} className="text-[10px] text-gray-600 hover:text-gray-300 transition-colors">Message agent...</button>
-                                ) : (
-                                  <div className="flex items-center gap-1.5">
-                                    <input type="text" value={sendInputValues[locationKey(session.node, t.id)] || ''} onChange={e => setSendInputValues(prev => ({ ...prev, [locationKey(session.node, t.id)]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') handleSendInput(t.id, session.node) }} placeholder="Type a message..." className="flex-1 bg-gray-900 border border-gray-700 text-gray-200 text-[11px] font-mono rounded px-2 py-1 focus:border-emerald-500 focus:outline-none" autoFocus />
-                                    <button onClick={() => handleSendInput(t.id, session.node)} disabled={sendingInput === locationKey(session.node, t.id) || !(sendInputValues[locationKey(session.node, t.id)] || '').trim()} className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-[10px] font-medium rounded transition-colors"><Send size={10} /></button>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                  })}
-                </div>
+                {!sendInputOpen[agentKey] ? (
+                  <button onClick={() => setSendInputOpen(prev => ({ ...prev, [agentKey]: true }))} className="text-[10px] text-gray-600 hover:text-gray-300 transition-colors">Message agent...</button>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <input type="text" value={sendInputValues[agentKey] || ''} onChange={e => setSendInputValues(prev => ({ ...prev, [agentKey]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') handleSendInput(agent.id, session.node) }} placeholder="Type a message..." className="flex-1 bg-gray-900 border border-gray-700 text-gray-200 text-[11px] font-mono rounded px-2 py-1.5 focus:border-emerald-500 focus:outline-none" autoFocus />
+                    <button onClick={() => handleSendInput(agent.id, session.node)} disabled={sendingInput === agentKey || !(sendInputValues[agentKey] || '').trim()} className="flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-[10px] font-medium rounded transition-colors"><Send size={10} /></button>
+                  </div>
+                )}
               </div>
             )
           })}
@@ -465,21 +413,6 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
         <TerminalView terminalId={liveTerminal.id} provider={liveTerminal.provider} agentProfile={liveTerminal.agentProfile} node={liveTerminal.node} onClose={() => setLiveTerminal(null)} />
       )}
       {outputTerminal && <OutputViewer terminalId={outputTerminal.id} node={outputTerminal.node} onClose={() => setOutputTerminal(null)} />}
-      <ConfirmModal
-        open={!!pendingClose}
-        title="Close Terminal"
-        message="This will kill the tmux window and terminate the agent process."
-        details={pendingClose ? [
-          { label: 'Terminal', value: `${pendingClose.terminal.agent_profile || 'default'} (${pendingClose.terminal.id})` },
-          { label: 'Session', value: pendingClose.terminal.tmux_session },
-          { label: 'Node', value: pendingClose.node || 'laptop' },
-        ] : []}
-        confirmLabel="Close Terminal"
-        variant="danger"
-        loading={!!closingTerminal}
-        onConfirm={handleDeleteTerminal}
-        onCancel={() => setPendingClose(null)}
-      />
       <ConfirmModal
         open={!!pendingExit}
         title="Graceful Exit"
@@ -497,13 +430,13 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       />
       <ConfirmModal
         open={!!pendingDeleteSession}
-        title="Delete Session"
-        message="This will terminate all agents in this session and remove it."
+        title="Delete Agent Session"
+        message="This will terminate the agent and remove its session."
         details={pendingDeleteSession ? [
           { label: 'Session', value: pendingDeleteSession.name },
           { label: 'Node', value: pendingDeleteSession.node || 'laptop' },
         ] : []}
-        confirmLabel="Delete Session"
+        confirmLabel="Delete Agent Session"
         variant="danger"
         loading={deletingSession}
         onConfirm={handleDeleteSession}

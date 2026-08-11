@@ -21,6 +21,10 @@ Extend CLI Agent Orchestrator (CAO) with a laptop-hosted fleet view that can:
 The laptop orchestrator always chooses the host. CAO does not schedule a task,
 recommend another host, or silently move a task.
 
+For the fleet MVP, one session represents exactly one agent. The UI creates,
+displays, controls, and deletes that session as a single unit; it does not add
+workers to an existing session.
+
 ## 2. MVP Architecture
 
 Reuse the existing `cao-server` as the runtime on every execution node.
@@ -73,6 +77,7 @@ The MVP does not include:
 
 - scheduled flows or the Flows UI (deferred until the core fleet task surface is stable);
 - cross-session memory and the Memory UI (deferred until the core fleet task surface is stable);
+- multiple agents inside one session (deferred with supervisor/worker workflows);
 - automatic node selection or scheduling;
 - a supervisor on one node delegating workers to another node;
 - cross-node `handoff`, `assign`, or agent inbox routing;
@@ -542,6 +547,7 @@ input and can open its terminal directly.
 These are deliberately deferred until the MVP proves useful:
 
 - scheduled and reusable flows;
+- multiple agents inside one session and their supervisor/worker controls;
 - cross-session, cross-node memory and retrospection;
 - cross-node `assign`, `handoff`, callbacks, and supervisor/worker routing;
 - controller-owned global agent inbox;
@@ -618,6 +624,7 @@ or the configured limits are exhausted.
 | 2026-08-10 | Scope | Made host and remote-path selection explicit. |
 | 2026-08-10 | Scope | Added the fleet UI, standard folder picker, and waiting-input notifications. |
 | 2026-08-10 | Scope | Trimmed the design to federating existing per-node CAO servers over SSH; deferred cross-node agent delegation. |
+| 2026-08-10 | Scope | Simplified the fleet MVP to one agent per session and deferred multi-agent session controls. |
 | 2026-08-10 | Implementation | Added SSH discovery, safe remote folder browsing, controller-owned tunnels, HTTP/WebSocket proxying, and fleet API tests. |
 | 2026-08-10 | Implementation | Added explicit node selection, on-demand combined overview, remote task prompt, folder picker, worktree toggle, and waiting-input notifications to the Web UI. |
 | 2026-08-10 | Deployment | Removed the obsolete global SSH forward, deployed the branch to `jbom-03`, and passed health, provider-tunnel, and remote-folder smoke tests. |

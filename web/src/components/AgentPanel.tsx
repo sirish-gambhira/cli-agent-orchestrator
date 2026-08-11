@@ -66,8 +66,6 @@ export function AgentPanel() {
       .catch(() => setModels([]))
       .finally(() => setLoadingModels(false))
   }, [provider, selectedNode])
-  const [pendingClose, setPendingClose] = useState<TerminalMeta | null>(null)
-  const [closingTerminal, setClosingTerminal] = useState<string | null>(null)
   const [sessionSearch, setSessionSearch] = useState('')
   const [inboxTerminalId, setInboxTerminalId] = useState<string | null>(null)
   const [workingDirectory, setWorkingDirectory] = useState('')
@@ -75,11 +73,6 @@ export function AgentPanel() {
   const [initialTask, setInitialTask] = useState('')
   const [useWorktree, setUseWorktree] = useState(false)
   const [terminalWorkDirs, setTerminalWorkDirs] = useState<Record<string, string | null>>({})
-  const [showAddAgent, setShowAddAgent] = useState(false)
-  const [addProvider, setAddProvider] = useState('kiro_cli')
-  const [addProfile, setAddProfile] = useState('')
-  const [addWorkDir, setAddWorkDir] = useState('')
-  const [addingAgent, setAddingAgent] = useState(false)
   const [pendingExit, setPendingExit] = useState<TerminalMeta | null>(null)
   const [exitingTerminal, setExitingTerminal] = useState<string | null>(null)
   const [sendInputOpen, setSendInputOpen] = useState<Record<string, boolean>>({})
@@ -106,7 +99,9 @@ export function AgentPanel() {
   }, [monitoredNodes])
 
   useEffect(() => {
-    fleetOverview.forEach(node => node.sessions.forEach(session => session.terminals?.forEach(terminal => {
+    fleetOverview.forEach(node => node.sessions.forEach(session => {
+      const terminal = session.terminals?.[0]
+      if (!terminal) return
       const key = `${node.name}:${terminal.id}`
       const status = terminal.status?.toUpperCase()
       if (status === 'WAITING_USER_ANSWER' && !notifiedWaiting.current.has(key)) {
@@ -118,24 +113,8 @@ export function AgentPanel() {
       } else if (status !== 'WAITING_USER_ANSWER') {
         notifiedWaiting.current.delete(key)
       }
-    })))
+    }))
   }, [fleetOverview])
-
-  const handleDeleteTerminal = async () => {
-    if (!pendingClose) return
-    const id = pendingClose.id
-    setClosingTerminal(id)
-    try {
-      await api.deleteTerminal(id, selectedNode)
-      if (liveTerminal?.id === id) setLiveTerminal(null)
-      if (activeSession) await selectSession(activeSession)
-      showSnackbar({ type: 'success', message: `Terminal ${id} closed — tmux window killed` })
-    } catch {
-      showSnackbar({ type: 'error', message: `Failed to close terminal ${id}` })
-    }
-    setClosingTerminal(null)
-    setPendingClose(null)
-  }
 
   const handleExitTerminal = async () => {
     if (!pendingExit) return
@@ -184,7 +163,7 @@ export function AgentPanel() {
   // Poll terminal statuses for visible terminals in the session detail
   useEffect(() => {
     if (!activeSessionDetail?.terminals.length) return
-    const terminalIds = activeSessionDetail.terminals.map(t => t.id)
+    const terminalIds = activeSessionDetail.terminals.slice(0, 1).map(t => t.id)
     const fetchStatuses = () => {
       terminalIds.forEach(id => {
         api.getTerminalStatus(id, selectedNode)
@@ -195,7 +174,7 @@ export function AgentPanel() {
     fetchStatuses()
     const interval = setInterval(fetchStatuses, 3000)
     return () => clearInterval(interval)
-  }, [activeSessionDetail?.terminals.map(t => t.id).join(','), selectedNode])
+  }, [activeSessionDetail?.terminals[0]?.id, selectedNode])
 
   useEffect(() => {
     Object.entries(terminalStatuses).forEach(([id, status]) => {
@@ -238,30 +217,14 @@ export function AgentPanel() {
   // Fetch working directories for terminals in session detail
   useEffect(() => {
     if (!activeSessionDetail?.terminals.length) return
-    activeSessionDetail.terminals.forEach(t => {
+    activeSessionDetail.terminals.slice(0, 1).forEach(t => {
       if (terminalWorkDirs[t.id] === undefined) {
         api.getWorkingDirectory(t.id, selectedNode)
           .then(res => setTerminalWorkDirs(prev => ({ ...prev, [t.id]: res.working_directory })))
           .catch(() => setTerminalWorkDirs(prev => ({ ...prev, [t.id]: null })))
       }
     })
-  }, [activeSessionDetail?.terminals.map(t => t.id).join(','), selectedNode])
-
-  const handleAddAgent = async () => {
-    if (!addProfile.trim() || !activeSession) return
-    setAddingAgent(true)
-    try {
-      await api.addTerminalToSession(activeSession, addProvider, addProfile.trim(), addWorkDir.trim() || undefined, selectedNode)
-      showSnackbar({ type: 'success', message: 'Agent added to session' })
-      setShowAddAgent(false)
-      setAddProfile('')
-      setAddWorkDir('')
-      if (activeSession) await selectSession(activeSession)
-    } catch (e: any) {
-      showSnackbar({ type: 'error', message: e.message || 'Failed to add agent' })
-    }
-    setAddingAgent(false)
-  }
+  }, [activeSessionDetail?.terminals[0]?.id, selectedNode])
 
   return (
     <div className="space-y-6">
@@ -276,7 +239,6 @@ export function AgentPanel() {
               value={selectedNode || '__local__'}
               onChange={value => {
                 setWorkingDirectory('')
-                setAddWorkDir('')
                 selectNode(value === '__local__' ? null : value)
               }}
               placeholder="Select execution node..."
@@ -317,7 +279,7 @@ export function AgentPanel() {
                   <span className="block text-xs font-mono text-gray-300 truncate">{node.name}</span>
                   <span className={`block text-[10px] mt-0.5 ${node.status === 'reachable' ? 'text-emerald-400' : 'text-red-400'}`}>
                     {node.status === 'reachable'
-                      ? `${node.sessions.length} session${node.sessions.length === 1 ? '' : 's'} · ${node.sessions.reduce((count, session) => count + (session.terminals?.length || 0), 0)} agents${node.sessions.some(session => session.terminals?.some(terminal => terminal.status?.toUpperCase() === 'WAITING_USER_ANSWER')) ? ' · input needed' : ''}`
+                      ? `${node.sessions.filter(session => session.terminals?.[0]).length} agent session${node.sessions.filter(session => session.terminals?.[0]).length === 1 ? '' : 's'}${node.sessions.some(session => session.terminals?.[0]?.status?.toUpperCase() === 'WAITING_USER_ANSWER') ? ' · input needed' : ''}`
                       : 'unavailable'}
                   </span>
                 </button>
@@ -361,7 +323,7 @@ export function AgentPanel() {
           </div>
         </div>
         <p className="text-xs text-gray-500 mb-4">
-          A session is a workspace where agents collaborate. Each session can have multiple agents that communicate via messages. Click a session to see its agents.
+          Each session contains one agent on the selected execution node. Click a session to inspect and control that agent.
         </p>
         {sessions.length === 0 ? (
           <p className="text-gray-500 text-sm">No active sessions. Create a new agent session above.</p>
@@ -403,91 +365,12 @@ export function AgentPanel() {
         <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">
-              Terminals in {activeSession}
+              Agent in {activeSession}
             </h3>
-            <button
-              onClick={() => setShowAddAgent(!showAddAgent)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-400 hover:text-emerald-400 bg-gray-900/50 hover:bg-gray-900 border border-gray-700/50 hover:border-emerald-700/50 rounded-lg transition-colors"
-              title="Add another agent to this session so they can collaborate"
-            >
-              <Plus size={14} />
-              Add Agent
-            </button>
           </div>
 
-          {/* Add Agent Inline Form */}
-          {showAddAgent && (
-            <div className="mb-4 p-4 bg-gray-900/70 border border-gray-700/50 rounded-lg space-y-3">
-              <p className="text-xs text-gray-500">
-                Add another agent to this session. Agents in the same session can send messages to each other and coordinate on tasks. A supervisor can delegate work to agents you add here.
-              </p>
-              <div className="flex gap-3 items-end flex-wrap">
-                <div className="min-w-[160px]">
-                  <label className="block text-xs text-gray-500 mb-1">Provider</label>
-                  <CustomSelect
-                    value={addProvider}
-                    onChange={setAddProvider}
-                    placeholder="Select provider..."
-                    options={(providers.length > 0 ? providers : FALLBACK_PROVIDERS.map(n => ({ name: n, binary: '', installed: true }))).map(p => ({
-                      value: p.name,
-                      label: p.name.replace(/_/g, ' '),
-                      sublabel: !p.installed ? 'Not installed' : undefined,
-                      disabled: !p.installed,
-                    }))}
-                  />
-                </div>
-                <div className="flex-1 min-w-[180px]">
-                  <label className="block text-xs text-gray-500 mb-1">Agent Profile</label>
-                  {profiles.length > 0 ? (
-                    <CustomSelect
-                      value={addProfile}
-                      onChange={setAddProfile}
-                      placeholder="Select a profile..."
-                      options={profiles.map(p => ({
-                        value: p.name,
-                        label: p.name,
-                        sublabel: p.description || undefined,
-                        group: SOURCE_LABELS[p.source] || p.source,
-                      }))}
-                    />
-                  ) : (
-                    <input
-                      type="text"
-                      value={addProfile}
-                      onChange={e => setAddProfile(e.target.value)}
-                      placeholder="e.g. developer, reviewer"
-                      className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5 focus:border-emerald-500 focus:outline-none"
-                    />
-                  )}
-                </div>
-                <button
-                  onClick={handleAddAgent}
-                  disabled={!addProfile.trim() || addingAgent}
-                  className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
-                >
-                  <Plus size={14} />
-                  {addingAgent ? 'Adding...' : 'Add'}
-                </button>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Working Directory</label>
-                <div className="relative">
-                  <FolderOpen size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                  <input
-                    type="text"
-                    value={addWorkDir}
-                    onChange={e => setAddWorkDir(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleAddAgent()}
-                    placeholder="/path/to/project (optional)"
-                    className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm font-mono rounded-lg pl-9 pr-3 py-2 focus:border-emerald-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
           <div className="space-y-2">
-            {activeSessionDetail.terminals.map(t => (
+            {activeSessionDetail.terminals.slice(0, 1).map(t => (
               <div key={t.id} className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -530,15 +413,6 @@ export function AgentPanel() {
                     >
                       <LogOut size={14} />
                       {exitingTerminal === t.id ? 'Exiting...' : 'Graceful Exit'}
-                    </button>
-                    <button
-                      onClick={() => setPendingClose(t as TerminalMeta)}
-                      disabled={closingTerminal === t.id}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
-                      title="Close terminal"
-                    >
-                      <Trash2 size={14} />
-                      {closingTerminal === t.id ? 'Closing...' : 'Close'}
                     </button>
                   </div>
                 </div>
@@ -608,24 +482,6 @@ export function AgentPanel() {
           onClose={() => setOutputTerminalId(null)}
         />
       )}
-
-      {/* Close Confirmation Modal */}
-      <ConfirmModal
-        open={!!pendingClose}
-        title="Close Terminal"
-        message="This will kill the tmux window and terminate the agent process. This action cannot be undone."
-        details={pendingClose ? [
-          { label: 'Terminal ID', value: pendingClose.id },
-          { label: 'Provider', value: pendingClose.provider },
-          { label: 'Profile', value: pendingClose.agent_profile || 'none' },
-          { label: 'Session', value: pendingClose.tmux_session },
-        ] : []}
-        confirmLabel="Close Terminal"
-        variant="danger"
-        loading={!!closingTerminal}
-        onConfirm={handleDeleteTerminal}
-        onCancel={() => setPendingClose(null)}
-      />
 
       {/* Graceful Exit Confirmation Modal */}
       <ConfirmModal
