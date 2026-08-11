@@ -122,6 +122,26 @@ def test_proxy_forwards_allowlisted_remote_api(client, monkeypatch):
     assert calls[0]["query"] == "limit=2"
 
 
+def test_successful_remote_session_delete_updates_fleet_cache(client, monkeypatch):
+    marked = []
+
+    monkeypatch.setattr(
+        fleet_service.fleet_service,
+        "proxy_request",
+        lambda **kwargs: FleetProxyResponse(200, b'{"success":true}', "application/json"),
+    )
+    monkeypatch.setattr(
+        fleet_state_monitor.cache,
+        "mark_session_deleted",
+        lambda node, name: marked.append((node, name)),
+    )
+
+    response = client.delete("/fleet/nodes/secure-02/proxy/sessions/tgt-deleted")
+
+    assert response.status_code == 200
+    assert marked == [("secure-02", "tgt-deleted")]
+
+
 def test_proxy_rejects_non_cao_surface(client, monkeypatch):
     def proxy_request(**kwargs):
         raise AssertionError("proxy must not be invoked")

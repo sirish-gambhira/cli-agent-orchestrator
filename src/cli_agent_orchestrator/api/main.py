@@ -1238,6 +1238,28 @@ async def proxy_fleet_node_api(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except NodeUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if 200 <= result.status_code < 300:
+        path_parts = remote_path.split("/")
+        if request.method == "DELETE" and len(path_parts) == 2 and path_parts[0] == "sessions":
+            await asyncio.to_thread(
+                fleet_state_monitor.cache.mark_session_deleted,
+                node,
+                path_parts[1],
+            )
+        elif request.method == "POST" and remote_path == "sessions":
+            # Explicit recreation of a recently deleted name must not remain
+            # hidden behind its deletion tombstone.
+            try:
+                created = json.loads(result.body)
+                created_session = created.get("session_name") if isinstance(created, dict) else None
+            except (TypeError, ValueError):
+                created_session = None
+            if created_session:
+                await asyncio.to_thread(
+                    fleet_state_monitor.cache.clear_session_tombstone,
+                    node,
+                    str(created_session),
+                )
     headers = {"content-type": result.content_type} if result.content_type else None
     return Response(content=result.body, status_code=result.status_code, headers=headers)
 

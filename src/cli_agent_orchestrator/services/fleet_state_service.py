@@ -54,6 +54,7 @@ class FleetStateCache:
         self.path = path
         self._lock = threading.RLock()
         self._nodes: dict[str, dict[str, Any]] = {}
+        self._deleted_sessions: dict[str, set[str]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -61,15 +62,35 @@ class FleetStateCache:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(payload, dict) and isinstance(payload.get("nodes"), dict):
                 self._nodes = payload["nodes"]
+                tombstones = payload.get("deleted_sessions", {})
+                if isinstance(tombstones, dict):
+                    self._deleted_sessions = {
+                        str(node): {str(name) for name in names}
+                        for node, names in tombstones.items()
+                        if isinstance(names, list)
+                    }
         except (OSError, ValueError, TypeError):
             self._nodes = {}
+            self._deleted_sessions = {}
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, raw_path = tempfile.mkstemp(prefix="fleet-state-", suffix=".json", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump({"version": 1, "nodes": self._nodes}, handle, separators=(",", ":"))
+                json.dump(
+                    {
+                        "version": 2,
+                        "nodes": self._nodes,
+                        "deleted_sessions": {
+                            node: sorted(names)
+                            for node, names in self._deleted_sessions.items()
+                            if names
+                        },
+                    },
+                    handle,
+                    separators=(",", ":"),
+                )
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(raw_path, self.path)
@@ -84,6 +105,25 @@ class FleetStateCache:
             current = self._nodes.get(node, {})
             if current.get("connection_id") == connection_id and sequence <= int(current.get("sequence", -1)):
                 return
+            deleted = self._deleted_sessions.get(node, set())
+            incoming_names = {
+                str(session.get("id") or session.get("name"))
+                for session in sessions
+                if session.get("id") or session.get("name")
+            }
+            # A snapshot that no longer contains a tombstoned session is the
+            # authoritative stream acknowledgement for that delete. Until then,
+            # filter it so an older in-flight snapshot cannot resurrect the row.
+            deleted.intersection_update(incoming_names)
+            if deleted:
+                sessions = [
+                    session
+                    for session in sessions
+                    if str(session.get("id") or session.get("name")) not in deleted
+                ]
+                self._deleted_sessions[node] = deleted
+            else:
+                self._deleted_sessions.pop(node, None)
             self._nodes[node] = {
                 "name": node,
                 "status": "live",
@@ -93,6 +133,35 @@ class FleetStateCache:
                 "last_seen": utc_now(),
                 "detail": None,
             }
+            self._save()
+
+    def mark_session_deleted(self, node: str, session_name: str) -> None:
+        """Apply a successful remote delete to the cache synchronously.
+
+        The durable tombstone remains until the node stream publishes a
+        snapshot where the session is absent, providing read-after-write
+        consistency across controller restarts and in-flight snapshots.
+        """
+        with self._lock:
+            deleted = self._deleted_sessions.setdefault(node, set())
+            deleted.add(session_name)
+            current = self._nodes.setdefault(node, {"name": node, "sessions": [], "sequence": 0})
+            current["sessions"] = [
+                session
+                for session in current.get("sessions", [])
+                if str(session.get("id") or session.get("name")) != session_name
+            ]
+            self._save()
+
+    def clear_session_tombstone(self, node: str, session_name: str) -> None:
+        """Allow an explicitly recreated session name to appear again."""
+        with self._lock:
+            deleted = self._deleted_sessions.get(node)
+            if not deleted or session_name not in deleted:
+                return
+            deleted.discard(session_name)
+            if not deleted:
+                self._deleted_sessions.pop(node, None)
             self._save()
 
     def heartbeat(self, node: str, connection_id: str, sequence: int) -> None:
