@@ -57,6 +57,7 @@ async def create_session(
     group: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
     use_worktree: bool = False,
+    permission_mode: str | None = None,
 ) -> Terminal:
     """Create a new session by creating its initial terminal.
 
@@ -103,6 +104,7 @@ async def create_session(
         group=group,
         metadata=metadata,
         use_worktree=use_worktree,
+        **({"permission_mode": permission_mode} if permission_mode is not None else {}),
     )
     dispatch_plugin_event(
         registry,

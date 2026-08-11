@@ -135,6 +135,12 @@ def _parse_env_pairs(pairs):
     help="Working directory for the session (default: current directory)",
 )
 @click.option(
+    "--permission-mode",
+    type=click.Choice(["prompt", "bypass"], case_sensitive=False),
+    default=None,
+    help="Provider approval behavior for cursor_cli, claude_code, and codex.",
+)
+@click.option(
     "--memory",
     "memory",
     is_flag=True,
@@ -162,6 +168,7 @@ def launch(
     auto_approve,
     yolo,
     working_directory,
+    permission_mode,
     memory,
     env_pairs,
 ):
@@ -293,6 +300,8 @@ def launch(
             params["allowed_tools"] = ",".join(resolved_allowed_tools)
         if memory:
             params["memory_manager"] = "true"
+        if permission_mode:
+            params["permission_mode"] = permission_mode
 
         # Forwarded env vars travel in the JSON body so values (which may
         # contain secrets) don't end up in cao-server's HTTP access log.

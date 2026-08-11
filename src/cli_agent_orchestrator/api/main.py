@@ -2409,6 +2409,7 @@ async def create_session(
     model: Optional[str] = None,
     use_worktree: bool = False,
     defer_init: bool = False,
+    permission_mode: Optional[Literal["prompt", "bypass"]] = None,
     body: Optional[CreateSessionBody] = None,
     _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> Terminal:
@@ -2504,6 +2505,7 @@ async def create_session(
             model=model,
             group=body.group if body else None,
             metadata=body.metadata if body else None,
+            **({"permission_mode": permission_mode} if permission_mode is not None else {}),
             # Preserve the existing service call shape for local clients/tests
             # unless the opt-in fleet/worktree feature is actually requested.
             **({"use_worktree": True} if use_worktree else {}),
@@ -2524,6 +2526,11 @@ async def create_session(
                         session_name=sidecar_session,
                         working_directory=working_directory,
                         registry=registry,
+                        **(
+                            {"permission_mode": permission_mode}
+                            if permission_mode is not None
+                            else {}
+                        ),
                     )
                 except Exception as e:
                     logger.warning(f"Failed to spawn memory_manager sidecar: {e}")
@@ -2619,6 +2626,7 @@ async def create_terminal_in_session(
     defer_init: bool = False,
     model: Optional[str] = None,
     use_worktree: bool = False,
+    permission_mode: Optional[Literal["prompt", "bypass"]] = None,
     body: Optional[CreateTerminalBody] = None,
     _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> Terminal:
@@ -2718,6 +2726,7 @@ async def create_terminal_in_session(
             engine=engine,
             model=model,
             use_worktree=use_worktree,
+            **({"permission_mode": permission_mode} if permission_mode is not None else {}),
         )
         return result
     except HTTPException:

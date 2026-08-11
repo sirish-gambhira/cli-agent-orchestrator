@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { api, AgentProfileInfo, FleetNodeOverview, ProviderInfo, ProviderModelInfo } from '../api'
+import { api, AgentProfileInfo, FleetNodeOverview, PermissionMode, ProviderInfo, ProviderModelInfo } from '../api'
 import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Tag, Search, Mail, Plus, LogOut, Send, FileText, X } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
@@ -36,6 +36,7 @@ export function AgentPanel() {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [models, setModels] = useState<ProviderModelInfo[]>([])
   const [model, setModel] = useState('')
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypass')
   const [loadingModels, setLoadingModels] = useState(false)
 
   useEffect(() => {
@@ -196,7 +197,7 @@ export function AgentPanel() {
     creatingRef.current = true
     setCreating(true)
     try {
-      await createSession(provider, profile.trim(), workingDirectory.trim() || undefined, sessionName.trim() || undefined, initialTask.trim() || undefined, useWorktree, model || undefined)
+      await createSession(provider, profile.trim(), workingDirectory.trim() || undefined, sessionName.trim() || undefined, initialTask.trim() || undefined, useWorktree, model || undefined, permissionMode)
       setShowSpawnModal(false)
       setProfile('')
       setWorkingDirectory('')
@@ -204,6 +205,7 @@ export function AgentPanel() {
       setInitialTask('')
       setUseWorktree(false)
       setModel('')
+      setPermissionMode('bypass')
     } finally {
       setCreating(false)
       creatingRef.current = false
@@ -595,6 +597,28 @@ export function AgentPanel() {
                       Models unavailable. Verify Cursor CLI is installed and authenticated on this node.
                     </div>
                   )}
+                </div>
+              )}
+
+              {['cursor_cli', 'claude_code', 'codex'].includes(provider) && (
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Permission Mode</label>
+                  <CustomSelect
+                    value={permissionMode}
+                    onChange={value => setPermissionMode(value as PermissionMode)}
+                    options={[
+                      {
+                        value: 'bypass',
+                        label: 'Bypass approvals',
+                        sublabel: 'Current CAO behavior; run without permission prompts',
+                      },
+                      {
+                        value: 'prompt',
+                        label: 'Require approval',
+                        sublabel: 'Pause and surface provider permission prompts for your input',
+                      },
+                    ]}
+                  />
                 </div>
               )}
 

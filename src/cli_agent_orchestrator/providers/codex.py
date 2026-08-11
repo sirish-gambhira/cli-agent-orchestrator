@@ -350,6 +350,7 @@ class CodexProvider(BaseProvider):
         allowed_tools: Optional[list] = None,
         skill_prompt: Optional[str] = None,
         model: Optional[str] = None,
+        permission_mode: Optional[str] = None,
     ):
         """Initialize provider state."""
         super().__init__(terminal_id, session_name, window_name, allowed_tools, skill_prompt)
@@ -357,6 +358,7 @@ class CodexProvider(BaseProvider):
         self._agent_profile = agent_profile
         # Explicit per-call override for profile.model, see _build_codex_command.
         self._model = model
+        self._permission_mode = permission_mode
 
     @property
     def blocks_orchestrated_input_while_waiting_user_answer(self) -> bool:
@@ -404,7 +406,17 @@ class CodexProvider(BaseProvider):
             except Exception as e:
                 raise ProviderError(f"Failed to load agent profile '{self._agent_profile}': {e}")
 
-        if profile and profile.codexProfile and not yolo:
+        if self._permission_mode == "prompt":
+            command_parts = [
+                "codex",
+                "--ask-for-approval",
+                "on-request",
+                "--sandbox",
+                "workspace-write",
+            ]
+        elif self._permission_mode == "bypass":
+            command_parts = ["codex", "--yolo"]
+        elif profile and profile.codexProfile and not yolo:
             command_parts = ["codex", "--profile", profile.codexProfile]
         else:
             command_parts = ["codex", "--yolo"]

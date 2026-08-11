@@ -208,6 +208,7 @@ class CursorCliProvider(BaseProvider):
         allowed_tools: Optional[list] = None,
         model: Optional[str] = None,
         skill_prompt: Optional[str] = None,
+        permission_mode: Optional[str] = None,
     ):
         """Initialize the Cursor CLI provider.
 
@@ -229,6 +230,7 @@ class CursorCliProvider(BaseProvider):
         self._initialized = False
         self._agent_profile = agent_profile
         self._model = model
+        self._permission_mode = permission_mode
         # Temp paths the provider has created under the CAO tmp dir.
         # ``cleanup()`` deletes every entry in this list so the
         # per-session files (system prompt + plugin dir) do not
@@ -373,14 +375,15 @@ class CursorCliProvider(BaseProvider):
 
         command_parts = [binary]
 
-        # Approval flag. We always pass --force when running under
-        # CAO so per-tool approval prompts do not block handoff /
-        # assign flows. --trust was removed because v2026 rejects it
+        # Approval flag. Bypass is CAO's backward-compatible default; explicit
+        # prompt mode leaves --force off so Cursor asks the operator.
+        # --trust was removed because v2026 rejects it
         # in interactive REPL mode ("only works with --print/headless
         # mode"); the CAO launch flow already confirms workspace
         # trust, and the interactive REPL has no per-directory trust
         # dialog that --trust would skip.
-        command_parts.append("--force")
+        if self._permission_mode != "prompt":
+            command_parts.append("--force")
 
         # Model override (--model, when explicitly set or supplied
         # by the agent profile's ``model`` field). Profile.model

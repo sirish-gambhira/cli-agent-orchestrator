@@ -226,6 +226,7 @@ class ClaudeCodeProvider(BaseProvider):
         allowed_tools: Optional[list] = None,
         skill_prompt: Optional[str] = None,
         model: Optional[str] = None,
+        permission_mode: Optional[str] = None,
     ):
         """Initialize provider state."""
         super().__init__(terminal_id, session_name, window_name, allowed_tools, skill_prompt)
@@ -235,6 +236,7 @@ class ClaudeCodeProvider(BaseProvider):
         # --model resolution below) -- e.g. a handoff/assign caller pinning a
         # specific model for one worker without needing a dedicated profile.
         self._model = model
+        self._permission_mode = permission_mode
         # Native-status dispatch tracking (_task_dispatched + flush-wait timers)
         # lives on BaseProvider and is consumed by _resolve_native_status().
         self._input_generation: int = 0
@@ -333,7 +335,13 @@ class ClaudeCodeProvider(BaseProvider):
         # pane and silently block handoff/assign flows.
         is_root = getattr(os, "geteuid", lambda: -1)() == 0
 
-        if profile and profile.permissionMode:
+        if self._permission_mode == "prompt":
+            command_parts = ["claude", "--permission-mode", "default"]
+        elif self._permission_mode == "bypass" and is_root:
+            command_parts = ["claude"]
+        elif self._permission_mode == "bypass":
+            command_parts = ["claude", "--dangerously-skip-permissions"]
+        elif profile and profile.permissionMode:
             command_parts = ["claude", "--permission-mode", profile.permissionMode]
         elif yolo and is_root:
             # Root users cannot use --dangerously-skip-permissions; omit it entirely.

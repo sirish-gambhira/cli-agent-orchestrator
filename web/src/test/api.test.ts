@@ -113,6 +113,27 @@ describe('API wrapper', () => {
     )
   })
 
+  it('createSession forwards permission mode', async () => {
+    mockResponse({ id: 't1' })
+    await api.createSession(
+      'claude_code',
+      'developer',
+      undefined,
+      undefined,
+      'jbom-03',
+      undefined,
+      false,
+      undefined,
+      false,
+      'prompt',
+    )
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('permission_mode=prompt'),
+      expect.anything(),
+    )
+  })
+
   it('createSession includes session name (url-encoded) when provided', async () => {
     mockResponse({ id: 't1' })
     await api.createSession('kiro_cli', 'developer', 'my session/1')

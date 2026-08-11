@@ -98,6 +98,24 @@ class TestCodexBuildCommand:
             " -c check_for_update_on_startup=false"
         )
 
+    def test_prompt_permission_mode_uses_approval_and_workspace_sandbox(self):
+        provider = CodexProvider(
+            "test1234", "test-session", "window-0", None, permission_mode="prompt"
+        )
+
+        command = provider._build_codex_command()
+
+        assert "--ask-for-approval on-request" in command
+        assert "--sandbox workspace-write" in command
+        assert "--yolo" not in command
+
+    def test_bypass_permission_mode_uses_yolo(self):
+        provider = CodexProvider(
+            "test1234", "test-session", "window-0", None, permission_mode="bypass"
+        )
+
+        assert "--yolo" in provider._build_codex_command()
+
     @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
     def test_build_command_with_skill_prompt(self, mock_load_profile, tmp_path):
         mock_profile = MagicMock()

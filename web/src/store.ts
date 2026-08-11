@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, FleetNode, Session, SessionDetail } from './api'
+import { api, FleetNode, PermissionMode, Session, SessionDetail } from './api'
 
 // Only trigger React re-renders when data actually changed
 function jsonEqual(a: unknown, b: unknown): boolean {
@@ -38,7 +38,7 @@ interface Store {
 
   fetchSessions: () => Promise<void>
   selectSession: (name: string | null) => Promise<void>
-  createSession: (provider: string, agentProfile: string, workingDirectory?: string, sessionName?: string, initialMessage?: string, useWorktree?: boolean, model?: string) => Promise<void>
+  createSession: (provider: string, agentProfile: string, workingDirectory?: string, sessionName?: string, initialMessage?: string, useWorktree?: boolean, model?: string, permissionMode?: PermissionMode) => Promise<void>
   deleteSession: (name: string) => Promise<void>
   showSnackbar: (snackbar: Snackbar) => void
   hideSnackbar: () => void
@@ -109,9 +109,9 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
-  createSession: async (provider, agentProfile, workingDirectory, sessionName, initialMessage, useWorktree, model) => {
+  createSession: async (provider, agentProfile, workingDirectory, sessionName, initialMessage, useWorktree, model, permissionMode) => {
     try {
-      await api.createSession(provider, agentProfile, sessionName, workingDirectory, get().selectedNode, initialMessage, useWorktree, model)
+      await api.createSession(provider, agentProfile, sessionName, workingDirectory, get().selectedNode, initialMessage, useWorktree, model, false, permissionMode)
       if (sessionName) deletionBarriers(get().selectedNode).delete(sessionName)
       get().showSnackbar({ type: 'success', message: 'Session created' })
       await get().fetchSessions()

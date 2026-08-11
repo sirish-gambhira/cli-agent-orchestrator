@@ -172,8 +172,9 @@ class TestAgentProviders:
     def test_list_cursor_models(self, client):
         output = "Available models\n\nauto - Auto (default)\ngpt-5.3-codex - Codex 5.3\n"
         completed = subprocess.CompletedProcess(["agent", "models"], 0, stdout=output, stderr="")
-        with patch("shutil.which", return_value="/usr/bin/agent"), patch(
-            "subprocess.run", return_value=completed
+        with (
+            patch("shutil.which", return_value="/usr/bin/agent"),
+            patch("subprocess.run", return_value=completed),
         ):
             response = client.get("/agents/providers/cursor_cli/models")
 
@@ -388,6 +389,44 @@ class TestCreateSession:
         assert call_kwargs["model"] == "gpt-5.1-codex"
         assert call_kwargs["initial_message"] == initial_message
         assert call_kwargs["initial_message_orchestration_type"] == OrchestrationType.SEND_MESSAGE
+
+    def test_create_session_passes_permission_mode(self, client):
+        mock_terminal = Terminal(
+            id="abcd1234",
+            name="test-window",
+            session_name="test-session",
+            provider="codex",
+            agent_profile="developer",
+        )
+        with patch("cli_agent_orchestrator.api.main.session_service") as mock_svc:
+            mock_svc.create_session = AsyncMock(return_value=mock_terminal)
+
+            response = client.post(
+                "/sessions",
+                params={
+                    "provider": "codex",
+                    "agent_profile": "developer",
+                    "permission_mode": "prompt",
+                },
+            )
+
+        assert response.status_code == 201
+        assert mock_svc.create_session.call_args.kwargs["permission_mode"] == "prompt"
+
+    def test_create_session_rejects_unknown_permission_mode(self, client):
+        with patch("cli_agent_orchestrator.api.main.session_service") as mock_svc:
+            mock_svc.create_session = AsyncMock()
+            response = client.post(
+                "/sessions",
+                params={
+                    "provider": "codex",
+                    "agent_profile": "developer",
+                    "permission_mode": "anything",
+                },
+            )
+
+        assert response.status_code == 422
+        mock_svc.create_session.assert_not_called()
 
     def test_create_session_preserves_env_vars_body_shape(self, client):
         """Existing cao launch --env callers keep using {"env_vars": {...}}."""

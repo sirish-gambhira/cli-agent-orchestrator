@@ -54,6 +54,7 @@ def make_provider(
     allowed_tools: list | None = None,
     model: str | None = None,
     skill_prompt: str | None = None,
+    permission_mode: str | None = None,
 ) -> CursorCliProvider:
     """Build a CursorCliProvider with the given configuration."""
     return CursorCliProvider(
@@ -64,6 +65,7 @@ def make_provider(
         allowed_tools=allowed_tools,
         model=model,
         skill_prompt=skill_prompt,
+        permission_mode=permission_mode,
     )
 
 
@@ -676,6 +678,20 @@ class TestBuildCommand:
         # we prefer the unambiguous cursor-agent alias first — see
         # issues #299 and #300).
         assert cmd == "cursor-agent --force"
+
+    @patch("cli_agent_orchestrator.providers.cursor_cli.load_agent_profile")
+    def test_prompt_permission_mode_omits_force(self, mock_load):
+        mock_load.side_effect = FileNotFoundError("no profile")
+        provider = make_provider(permission_mode="prompt")
+
+        assert provider._build_cursor_command() == "cursor-agent"
+
+    @patch("cli_agent_orchestrator.providers.cursor_cli.load_agent_profile")
+    def test_bypass_permission_mode_includes_force(self, mock_load):
+        mock_load.side_effect = FileNotFoundError("no profile")
+        provider = make_provider(permission_mode="bypass")
+
+        assert provider._build_cursor_command() == "cursor-agent --force"
 
     @patch("cli_agent_orchestrator.providers.cursor_cli.load_agent_profile")
     def test_constructor_model_forwarded(self, mock_load):

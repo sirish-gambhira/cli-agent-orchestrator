@@ -1684,6 +1684,38 @@ class TestClaudeCodeProviderModelFlag:
 class TestClaudeCodeProviderPermissionMode:
 
     @patch("cli_agent_orchestrator.providers.claude_code.load_agent_profile")
+    def test_launch_prompt_mode_overrides_profile_and_requires_approval(self, mock_load):
+        mock_profile = MagicMock()
+        mock_profile.model = None
+        mock_profile.system_prompt = None
+        mock_profile.mcpServers = None
+        mock_profile.permissionMode = "bypassPermissions"
+        mock_load.return_value = mock_profile
+
+        provider = ClaudeCodeProvider("tid", "sess", "win", "agent", permission_mode="prompt")
+        command = provider._build_claude_command()
+
+        assert "--permission-mode default" in command
+        assert "--dangerously-skip-permissions" not in command
+
+    @patch("cli_agent_orchestrator.providers.claude_code.load_agent_profile")
+    @patch("cli_agent_orchestrator.providers.claude_code.os")
+    def test_launch_bypass_mode_overrides_profile(self, mock_os, mock_load):
+        mock_os.geteuid.return_value = 1000
+        mock_profile = MagicMock()
+        mock_profile.model = None
+        mock_profile.system_prompt = None
+        mock_profile.mcpServers = None
+        mock_profile.permissionMode = "plan"
+        mock_load.return_value = mock_profile
+
+        provider = ClaudeCodeProvider("tid", "sess", "win", "agent", permission_mode="bypass")
+        command = provider._build_claude_command()
+
+        assert "--dangerously-skip-permissions" in command
+        assert "--permission-mode" not in command
+
+    @patch("cli_agent_orchestrator.providers.claude_code.load_agent_profile")
     def test_uses_permission_mode_when_set_and_not_yolo(self, mock_load):
         mock_profile = MagicMock()
         mock_profile.model = None

@@ -179,6 +179,7 @@ async def create_terminal(
     use_worktree: bool = False,
     group: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    permission_mode: Optional[str] = None,
 ) -> Terminal:
     """Create a new terminal with an initialized CLI agent.
 
@@ -252,6 +253,17 @@ async def create_terminal(
     # ran (use_worktree=False) or itself failed before create_worktree returned.
     worktree_repo_root: Optional[str] = None
     try:
+        if permission_mode is not None:
+            if permission_mode not in {"prompt", "bypass"}:
+                raise ValueError("permission_mode must be 'prompt' or 'bypass'")
+            if provider not in {
+                ProviderType.CURSOR_CLI.value,
+                ProviderType.CLAUDE_CODE.value,
+                ProviderType.CODEX.value,
+            }:
+                raise ValueError(
+                    "permission_mode is supported only for cursor_cli, claude_code, and codex"
+                )
         # Resolve profile policy and Kiro engine BEFORE allocating any backend
         # resource. A KAS request must probe then fail closed with no window,
         # database row, FIFO, Herdr registration, or provider process.
@@ -475,6 +487,7 @@ async def create_terminal(
             skill_prompt=skill_prompt,
             model=model or (profile.model if profile else None),
             engine=resolved_engine,
+            **({"permission_mode": permission_mode} if permission_mode is not None else {}),
         )
 
         # Deferred-init path: return fast so callers (e.g. MCP assign) do not
