@@ -58,6 +58,27 @@ class TestCreateSession:
     @pytest.mark.asyncio
     @patch("cli_agent_orchestrator.services.session_service.dispatch_plugin_event")
     @patch("cli_agent_orchestrator.services.session_service.create_terminal")
+    async def test_create_blank_session_can_defer_provider_initialization(
+        self, mock_create_terminal, mock_dispatch
+    ):
+        mock_terminal = MagicMock()
+        mock_terminal.session_name = "tgt-test-copy"
+        mock_create_terminal.return_value = mock_terminal
+
+        await create_session(
+            provider="codex",
+            agent_profile="developer",
+            session_name="tgt-test-copy",
+            defer_init=True,
+        )
+
+        call_kwargs = mock_create_terminal.call_args.kwargs
+        assert call_kwargs["defer_init"] is True
+        assert call_kwargs["initial_message"] is None
+
+    @pytest.mark.asyncio
+    @patch("cli_agent_orchestrator.services.session_service.dispatch_plugin_event")
+    @patch("cli_agent_orchestrator.services.session_service.create_terminal")
     async def test_create_session_forwards_launch_payload(
         self, mock_create_terminal, mock_dispatch
     ):

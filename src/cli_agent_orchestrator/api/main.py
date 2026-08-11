@@ -2408,6 +2408,7 @@ async def create_session(
     engine: Optional[KiroEngine] = None,
     model: Optional[str] = None,
     use_worktree: bool = False,
+    defer_init: bool = False,
     body: Optional[CreateSessionBody] = None,
     _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> Terminal:
@@ -2435,6 +2436,10 @@ async def create_session(
 
     ``model`` is an optional per-launch override. It uses the same validation
     and provider handoff as the existing terminal-creation endpoint.
+
+    ``defer_init=true`` returns after the tmux terminal is created and performs
+    provider initialization in the background. Unlike an empty initial
+    message, it is a valid way to launch a blank interactive agent quickly.
 
     ``body.group``/``body.metadata`` are the #432 discovery fields, set on
     the initial terminal at creation time (``group`` is also updatable later
@@ -2495,6 +2500,7 @@ async def create_session(
             engine=engine,
             initial_message=initial_message,
             initial_message_orchestration_type=initial_message_orchestration_type,
+            **({"defer_init": True} if defer_init else {}),
             model=model,
             group=body.group if body else None,
             metadata=body.metadata if body else None,

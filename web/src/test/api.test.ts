@@ -75,6 +75,15 @@ describe('API wrapper', () => {
     )
   })
 
+  it('createSession can defer a blank provider launch', async () => {
+    mockResponse({ id: 't1', session_name: 'tgt-test-copy' })
+    await api.createSession('codex', 'developer', 'tgt-test-copy', '/repo', 'secure-02', undefined, false, undefined, true)
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('defer_init=true'),
+      expect.objectContaining({ method: 'POST', body: '{}' }),
+    )
+  })
+
   it('createSession sends POST with opencode_cli provider', async () => {
     const terminal = { id: 't2', name: 'dev', provider: 'opencode_cli', session_name: 's2' }
     mockResponse(terminal)

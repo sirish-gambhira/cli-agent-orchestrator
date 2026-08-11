@@ -52,6 +52,7 @@ async def create_session(
     engine: KiroEngine | str | None = None,
     initial_message: str | None = None,
     initial_message_orchestration_type: OrchestrationType | None = None,
+    defer_init: bool = False,
     model: str | None = None,
     group: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -63,10 +64,10 @@ async def create_session(
     They are persisted on the session record so every worker spawned later
     in the same session inherits them. See issue #248.
 
-    When ``initial_message`` is provided, the initial terminal uses the
-    existing deferred-init path so provider initialization and delivery can
-    continue after the session response. Omitting it preserves the synchronous
-    initialization behavior used by existing callers.
+    When ``initial_message`` is provided, or ``defer_init`` is explicitly set,
+    the initial terminal uses the existing deferred-init path so provider
+    initialization can continue after the session response. This also supports
+    fast blank launches where there is intentionally no first task.
     On the deferred path, the ``post_create_session`` plugin event is dispatched
     before provider initialization and message delivery finish.
 
@@ -95,7 +96,7 @@ async def create_session(
         registry=registry,
         env_vars=env_vars,
         engine=engine,
-        defer_init=initial_message is not None,
+        defer_init=defer_init or initial_message is not None,
         initial_message=initial_message,
         initial_message_orchestration_type=initial_message_orchestration_type,
         model=model,

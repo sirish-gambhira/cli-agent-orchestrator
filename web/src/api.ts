@@ -265,8 +265,8 @@ export const api = {
   // Sessions
   listSessions: (node?: string | null) => fetchJSON<Session[]>(nodeEndpoint('/sessions', node)),
   getSession: (name: string, node?: string | null) => fetchJSON<SessionDetail>(nodeEndpoint(`/sessions/${name}`, node)),
-  createSession: (provider: string, agentProfile: string, sessionName?: string, workingDirectory?: string, node?: string | null, initialMessage?: string, useWorktree = false, model?: string) =>
-    fetchJSON<Terminal>(nodeEndpoint(`/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}${useWorktree ? '&use_worktree=true' : ''}${model ? `&model=${encodeURIComponent(model)}` : ''}`, node), {
+  createSession: (provider: string, agentProfile: string, sessionName?: string, workingDirectory?: string, node?: string | null, initialMessage?: string, useWorktree = false, model?: string, deferInit = false) =>
+    fetchJSON<Terminal>(nodeEndpoint(`/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}${useWorktree ? '&use_worktree=true' : ''}${model ? `&model=${encodeURIComponent(model)}` : ''}${deferInit ? '&defer_init=true' : ''}`, node), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(initialMessage ? { initial_message: initialMessage } : {}),

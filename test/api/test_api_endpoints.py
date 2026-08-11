@@ -329,6 +329,32 @@ class TestCreateSession:
         assert response.json()["engine"] == "kas"
         assert mock_svc.create_session.call_args.kwargs["engine"] == "kas"
 
+    def test_create_session_can_defer_blank_provider_initialization(self, client):
+        mock_terminal = Terminal(
+            id="abcd1234",
+            name="developer-copy",
+            session_name="tgt-test-copy",
+            provider="codex",
+            agent_profile="developer",
+        )
+        with patch("cli_agent_orchestrator.api.main.session_service") as mock_svc:
+            mock_svc.create_session = AsyncMock(return_value=mock_terminal)
+
+            response = client.post(
+                "/sessions",
+                params={
+                    "provider": "codex",
+                    "agent_profile": "developer",
+                    "session_name": "tgt-test-copy",
+                    "defer_init": "true",
+                },
+                json={},
+            )
+
+        assert response.status_code == 201
+        assert mock_svc.create_session.call_args.kwargs["defer_init"] is True
+        assert mock_svc.create_session.call_args.kwargs["initial_message"] is None
+
     def test_create_session_passes_model_and_initial_message(self, client):
         """The launch override and first task reach the session service, while
         the task remains in the JSON body rather than the request URL."""

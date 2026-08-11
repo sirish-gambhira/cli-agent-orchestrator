@@ -15,6 +15,8 @@ interface TerminalViewProps {
   onReplicated?: (terminal: TerminalRecord) => void
   embedded?: boolean
   replicationEnabled?: boolean
+  active?: boolean
+  onActivate?: () => void
 }
 
 // Provider TUIs commonly enable DEC mouse tracking. When xterm accepts those
@@ -75,8 +77,10 @@ async function copyTerminalSelection(term: Terminal, text: string): Promise<bool
   return copyTerminalText(text)
 }
 
-export function TerminalView({ terminalId, sessionName, provider, agentProfile, onClose, node, onReplicated, embedded = false, replicationEnabled = true }: TerminalViewProps) {
+export function TerminalView({ terminalId, sessionName, provider, agentProfile, onClose, node, onReplicated, embedded = false, replicationEnabled = true, active = true, onActivate }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const splitContainerRef = useRef<HTMLDivElement>(null)
+  const resizingRef = useRef(false)
   const terminalRef = useRef<Terminal | null>(null)
   const selectedTextRef = useRef('')
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -87,6 +91,8 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
   const [replicateStatus, setReplicateStatus] = useState<'idle' | 'creating' | 'created' | 'failed'>('idle')
   const [replicateMessage, setReplicateMessage] = useState('')
   const [replicaTerminal, setReplicaTerminal] = useState<TerminalRecord | null>(null)
+  const [activePane, setActivePane] = useState<'primary' | 'replica'>('primary')
+  const [splitPercent, setSplitPercent] = useState(50)
 
   const showCopyResult = useCallback((copied: boolean) => {
     setCopyStatus(copied ? 'copied' : 'failed')
@@ -120,10 +126,15 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
         `${sessionName}-copy`,
         workingDirectory || undefined,
         node,
+        undefined,
+        false,
+        undefined,
+        true,
       )
       setReplicateStatus('created')
       setReplicateMessage(`Created ${replica.session_name}`)
       setReplicaTerminal(replica)
+      setActivePane('replica')
       onReplicated?.(replica)
     } catch (error) {
       setReplicateStatus('failed')
@@ -282,24 +293,38 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
 
   useEffect(() => () => clearTimeout(copyFeedbackTimerRef.current), [])
 
+  const paneIsActive = embedded ? active : !replicaTerminal || activePane === 'primary'
+  const activateThisPane = embedded ? onActivate : () => setActivePane('primary')
+
+  const resizeSplit = (clientX: number) => {
+    const rect = splitContainerRef.current?.getBoundingClientRect()
+    if (!rect || rect.width <= 0) return
+    const percent = ((clientX - rect.left) / rect.width) * 100
+    setSplitPercent(Math.min(80, Math.max(20, percent)))
+  }
+
   const pane = (
-    <div className="flex flex-col min-w-0 h-full" style={{ background: '#0d1117' }}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-700/50 shrink-0">
-        <div className="flex items-center gap-3">
-          <TermIcon size={16} className="text-emerald-400" />
-          <span className="text-sm font-mono text-gray-300">{sessionName}</span>
-          <span className="text-[10px] font-mono text-gray-600">{terminalId}</span>
-          {node && <span className="text-xs text-blue-300 bg-blue-900/30 px-2 py-0.5 rounded">{node}</span>}
-          {provider && <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded">{provider}</span>}
-          {agentProfile && <span className="text-xs text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded">{agentProfile}</span>}
+    <div
+      className={`flex flex-col min-w-0 h-full ${paneIsActive ? 'bg-[#0d1117]' : 'bg-[#0b0f14]'}`}
+      onMouseDown={activateThisPane}
+    >
+      {/* Compact iTerm-style pane title bar */}
+      <div className={`h-9 flex items-center justify-between px-2 border-b shrink-0 ${paneIsActive ? 'bg-gray-800 border-blue-500/70' : 'bg-gray-900 border-gray-700/60'}`}>
+        <div className="flex items-center gap-2 min-w-0 flex-1" title={`${sessionName} · ${terminalId} · ${provider || ''} · ${agentProfile || ''}`}>
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${paneIsActive ? 'bg-blue-400' : 'bg-gray-600'}`} />
+          <TermIcon size={13} className={paneIsActive ? 'text-blue-300 shrink-0' : 'text-gray-500 shrink-0'} />
+          <span className="text-xs font-mono text-gray-200 truncate">{sessionName}</span>
+          {node && <span className="text-[10px] text-blue-300 truncate max-w-24">{node}</span>}
+          {agentProfile && <span className="text-[10px] text-emerald-400 truncate max-w-20">{agentProfile}</span>}
         </div>
-        <div className="flex items-center gap-3">
-          <span className={`text-[10px] ${copyStatus === 'failed' ? 'text-red-400' : copyStatus === 'copied' ? 'text-emerald-400' : 'text-gray-600'}`}>
-            {copyStatus === 'copied' ? 'Copied' : copyStatus === 'failed' ? 'Copy failed' : 'Select, then ⌘C / Ctrl+Shift+C'}
-          </span>
+        <div className="flex items-center gap-1 shrink-0 ml-2">
+          {copyStatus !== 'idle' && (
+            <span className={`text-[10px] max-w-24 truncate ${copyStatus === 'failed' ? 'text-red-400' : 'text-emerald-400'}`}>
+              {copyStatus === 'copied' ? 'Copied' : 'Copy failed'}
+            </span>
+          )}
           {replicationEnabled && replicateStatus !== 'idle' && (
-            <span className={`text-[10px] max-w-64 truncate ${replicateStatus === 'failed' ? 'text-red-400' : replicateStatus === 'created' ? 'text-emerald-400' : 'text-blue-300'}`} title={replicateMessage}>
+            <span className={`text-[10px] max-w-32 truncate ${replicateStatus === 'failed' ? 'text-red-400' : replicateStatus === 'created' ? 'text-emerald-400' : 'text-blue-300'}`} title={replicateMessage}>
               {replicateMessage}
             </span>
           )}
@@ -307,27 +332,25 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
             onMouseDown={e => e.preventDefault()}
             onClick={copyCurrentSelection}
             disabled={!hasSelection}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-300 bg-gray-800 hover:bg-gray-700 disabled:opacity-30 disabled:hover:bg-gray-800 rounded transition-colors"
+            className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-25 rounded transition-colors"
             title="Copy selected terminal text"
           >
             {copyStatus === 'copied' ? <Check size={13} /> : <Copy size={13} />}
-            Copy
           </button>
           {replicationEnabled && (
             <button
               onClick={() => replicateHandlerRef.current()}
               disabled={replicateStatus === 'creating' || replicateStatus === 'created'}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-300 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 rounded transition-colors"
+              className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-30 rounded transition-colors"
               title={`Create ${sessionName}-copy without an initial task (⌘D)`}
             >
               <CopyPlus size={13} />
-              {replicateStatus === 'creating' ? 'Replicating…' : 'Replicate ⌘D'}
             </button>
           )}
           <button
             onClick={onClose}
-            className="p-1 text-gray-500 hover:text-white transition-colors rounded"
-            title="Close terminal"
+            className="p-1 text-gray-500 hover:text-white hover:bg-gray-700 transition-colors rounded"
+            title={embedded ? 'Close split pane' : 'Close terminal view'}
           >
             <X size={18} />
           </button>
@@ -343,23 +366,49 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
   if (embedded) return pane
 
   return (
-    <div className="fixed inset-0 z-50 flex" style={{ background: '#0d1117' }}>
-      <div className={`h-full min-w-0 ${replicaTerminal ? 'w-1/2 border-r border-gray-700' : 'w-full'}`}>
+    <div ref={splitContainerRef} className="fixed inset-0 z-50 flex" style={{ background: '#0d1117' }}>
+      <div className="h-full min-w-0 shrink-0" style={{ flexBasis: replicaTerminal ? `${splitPercent}%` : '100%' }}>
         {pane}
       </div>
       {replicaTerminal && (
-        <div className="h-full min-w-0 w-1/2">
-          <TerminalView
-            terminalId={replicaTerminal.id}
-            sessionName={replicaTerminal.session_name}
-            provider={replicaTerminal.provider}
-            agentProfile={replicaTerminal.agent_profile}
-            node={node}
-            embedded
-            replicationEnabled={false}
-            onClose={() => setReplicaTerminal(null)}
+        <>
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize terminal panes"
+            className="h-full w-1 shrink-0 cursor-col-resize bg-gray-700 hover:bg-blue-500 active:bg-blue-400 transition-colors z-10"
+            onPointerDown={event => {
+              resizingRef.current = true
+              event.currentTarget.setPointerCapture(event.pointerId)
+              resizeSplit(event.clientX)
+              event.preventDefault()
+            }}
+            onPointerMove={event => { if (resizingRef.current) resizeSplit(event.clientX) }}
+            onPointerUp={event => {
+              resizingRef.current = false
+              event.currentTarget.releasePointerCapture(event.pointerId)
+            }}
+            onPointerCancel={() => { resizingRef.current = false }}
+            onDoubleClick={() => setSplitPercent(50)}
           />
-        </div>
+          <div className="h-full min-w-0 flex-1">
+            <TerminalView
+              terminalId={replicaTerminal.id}
+              sessionName={replicaTerminal.session_name}
+              provider={replicaTerminal.provider}
+              agentProfile={replicaTerminal.agent_profile}
+              node={node}
+              embedded
+              replicationEnabled={false}
+              active={activePane === 'replica'}
+              onActivate={() => setActivePane('replica')}
+              onClose={() => {
+                setReplicaTerminal(null)
+                setActivePane('primary')
+              }}
+            />
+          </div>
+        </>
       )}
     </div>
   )
