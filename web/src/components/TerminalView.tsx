@@ -12,6 +12,29 @@ interface TerminalViewProps {
   node?: string | null
 }
 
+async function copyTerminalText(text: string): Promise<void> {
+  if (!text) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+  } catch {
+    // Clipboard permissions vary across browsers and non-secure origins. Fall
+    // through to the synchronous, user-gesture-compatible copy path below.
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  textarea.remove()
+}
+
 export function TerminalView({ terminalId, provider, agentProfile, onClose, node }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -68,19 +91,22 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       term.write('\r\n\x1b[33m[Connection closed]\x1b[0m\r\n')
     }
 
-    // Copy selection to clipboard on mouse-up
-    term.onSelectionChange(() => {
+    // Copy only after the actual mouse-up gesture. Clipboard writes from
+    // xterm's selection-change callback are rejected by Safari and some
+    // Chromium permission modes because that callback fires while dragging.
+    const copySelection = () => {
       const selection = term.getSelection()
-      if (selection) {
-        navigator.clipboard.writeText(selection).catch(() => {})
-      }
-    })
+      if (selection) void copyTerminalText(selection)
+    }
+    el.addEventListener('mouseup', copySelection)
 
-    // Ctrl+Shift+C to copy selection
+    // Match native terminal conventions on Linux/Windows and macOS.
     term.attachCustomKeyEventHandler((e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+      const copyShortcut = (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'c')
+        || (e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 'c')
+      if (copyShortcut) {
         const selection = term.getSelection()
-        if (selection) navigator.clipboard.writeText(selection).catch(() => {})
+        if (selection) void copyTerminalText(selection)
         return false
       }
       return true
@@ -118,6 +144,7 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       cancelAnimationFrame(initialFit)
       clearTimeout(resizeTimer)
       resizeObserver.disconnect()
+      el.removeEventListener('mouseup', copySelection)
       ws.close()
       term.dispose()
     }
@@ -135,7 +162,7 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
           {agentProfile && <span className="text-xs text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded">{agentProfile}</span>}
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-[10px] text-gray-600">Click X to close</span>
+          <span className="text-[10px] text-gray-600">Select to copy · ⌘C / Ctrl+Shift+C</span>
           <button
             onClick={onClose}
             className="p-1 text-gray-500 hover:text-white transition-colors rounded"
