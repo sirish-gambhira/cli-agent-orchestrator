@@ -104,6 +104,7 @@ otel = [
 "cao-server" = "cli_agent_orchestrator.api.main:main"
 "cao-mcp-server" = "cli_agent_orchestrator.mcp_server.server:main"
 "cao-ops-mcp-server" = "cli_agent_orchestrator.ops_mcp_server.server:main"
+"fleet" = "cli_agent_orchestrator.cli.fleet:main"
 
 [project.entry-points."cao.plugins"]
 claude_code_memory = "cli_agent_orchestrator.plugins.builtin.claude_code_memory:ClaudeCodeMemoryPlugin"
