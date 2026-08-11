@@ -370,7 +370,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-2 min-w-0">
                     <Bot size={16} className="text-emerald-400 shrink-0" />
-                    <span className="text-sm font-semibold text-gray-200 truncate">{agent.agent_profile || 'default'}</span>
+                    <span className="text-sm font-semibold text-gray-200 font-mono truncate">{session.name}</span>
                     <StatusBadge status={terminalStatuses[agentKey] || agent.status || null} />
                     <span className="text-[10px] text-gray-500">{agent.provider}</span>
                   </div>
@@ -384,7 +384,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                 </div>
 
                 <div className="flex items-center gap-3 text-[10px] text-gray-600 flex-wrap">
-                  <span className="font-mono">{session.name}</span>
+                  <span className="text-emerald-400">{agent.agent_profile || 'default'}</span>
                   <span className={`font-mono bg-gray-700/60 px-1.5 py-0.5 rounded ${session.nodeStatus === 'offline' ? 'text-red-300' : session.nodeStatus === 'stale' ? 'text-amber-300' : 'text-cyan-300'}`}>
                     {session.node || 'laptop'}{session.nodeStatus && session.nodeStatus !== 'live' ? ` · ${session.nodeStatus}` : ''}
                   </span>
