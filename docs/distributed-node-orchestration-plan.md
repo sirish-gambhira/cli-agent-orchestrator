@@ -604,6 +604,45 @@ The initial reference workflow is `Claude planner -> Codex implementer ->
 Claude reviewer`, repeating the implement/review pair until the goal is approved
 or the configured limits are exhausted.
 
+### Transport and operational hardening
+
+The current transport choices are appropriate for the single-user fleet MVP:
+OpenSSH owns authentication, aliases, jump hosts, and host-key verification;
+node APIs stay loopback-only behind controller-owned SSH tunnels; fleet state
+uses persistent, versioned WebSocket streams with sequence numbers, connection
+IDs, heartbeats, exponential reconnect, authoritative snapshots, durable cache,
+and deletion tombstones; live terminals use a real PTY attached to tmux with
+binary WebSocket output, resize propagation, native tmux scrollback, and clean
+detach. A switch to gRPC is not required for this architecture.
+
+Before treating the fleet as an unattended or multi-user production service,
+complete the following hardening work:
+
+- add SSH `ServerAliveInterval` and `ServerAliveCountMax` settings, plus jitter
+  to reconnect backoff;
+- isolate the managed CAO forward with `ClearAllForwardings=yes` and use
+  `ExitOnForwardFailure=yes`, avoiding interference from unrelated forwards in
+  the selected SSH host block;
+- retain bounded SSH stderr diagnostics instead of discarding tunnel startup
+  and disconnect errors;
+- bound terminal output queues and input frame sizes, with explicit
+  backpressure and overload behavior;
+- add browser terminal reconnect/resume behavior and a visible connection-state
+  indicator;
+- define deterministic resize ownership so multiple viewers or split panes do
+  not fight over one shared tmux window size;
+- supervise the laptop controller and node servers with launchd/systemd rather
+  than tmux when unattended availability is required;
+- add structured tunnel, state-stream, reconnect, queue-depth, and terminal
+  lifecycle metrics and logs;
+- add protocol/capability negotiation for mixed controller and node versions;
+- review authentication and authorization before binding any controller or
+  node API beyond loopback. The PTY WebSocket is full terminal access and must
+  not be exposed directly to an untrusted network.
+
+These items harden lifecycle, observability, and resource limits; they do not
+require replacing SSH, WebSocket, PTY, or tmux as the core transport design.
+
 ## 15. Remaining MVP Decisions
 
 - [ ] Where should laptop fleet metadata be stored under CAO's home directory?
@@ -628,6 +667,7 @@ or the configured limits are exhausted.
 | 2026-08-10 | Implementation | Added SSH discovery, safe remote folder browsing, controller-owned tunnels, HTTP/WebSocket proxying, and fleet API tests. |
 | 2026-08-10 | Implementation | Added explicit node selection, on-demand combined overview, remote task prompt, folder picker, worktree toggle, and waiting-input notifications to the Web UI. |
 | 2026-08-10 | Deployment | Removed the obsolete global SSH forward, deployed the branch to `jbom-03`, and passed health, provider-tunnel, and remote-folder smoke tests. |
+| 2026-08-10 | Planning | Recorded the production hardening backlog for SSH lifecycle, WebSocket backpressure/reconnect, tmux resize ownership, service supervision, observability, and mixed-version negotiation. |
 
 ## 17. Definition of Done
 
