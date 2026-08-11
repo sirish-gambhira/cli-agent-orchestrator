@@ -6,6 +6,21 @@ function jsonEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+const nodeKey = (node: string | null) => node || 'local'
+let sessionRequestSequence = 0
+const latestAppliedRequest = new Map<string, number>()
+const deletedSessionBarriers = new Map<string, Map<string, number>>()
+
+function deletionBarriers(node: string | null): Map<string, number> {
+  const key = nodeKey(node)
+  let barriers = deletedSessionBarriers.get(key)
+  if (!barriers) {
+    barriers = new Map()
+    deletedSessionBarriers.set(key, barriers)
+  }
+  return barriers
+}
+
 interface Snackbar {
   type: 'success' | 'error' | 'info'
   message: string
@@ -45,17 +60,33 @@ export const useStore = create<Store>((set, get) => ({
   selectedNode: null,
 
   fetchSessions: async () => {
+    const requestedNode = get().selectedNode
+    const requestedNodeKey = nodeKey(requestedNode)
+    const requestSequence = ++sessionRequestSequence
     try {
-      const sessions = await api.listSessions(get().selectedNode)
+      const sessions = await api.listSessions(requestedNode)
+      if (get().selectedNode !== requestedNode) return
+      if (requestSequence < (latestAppliedRequest.get(requestedNodeKey) || 0)) return
+
+      const barriers = deletionBarriers(requestedNode)
+      for (const [name, barrier] of barriers) {
+        // Only a request begun after the delete may acknowledge absence. An
+        // older in-flight response is never allowed to clear the barrier.
+        if (requestSequence > barrier && !sessions.some(session => session.name === name)) {
+          barriers.delete(name)
+        }
+      }
+      const visibleSessions = sessions.filter(session => !barriers.has(session.name))
+      latestAppliedRequest.set(requestedNodeKey, requestSequence)
       const prev = get()
       // Only skip empty responses when reconnecting (connected was false),
       // not after intentional deletions.
-      if (sessions.length === 0 && prev.sessions.length > 0 && !prev.connected) {
+      if (visibleSessions.length === 0 && prev.sessions.length > 0 && !prev.connected) {
         set({ connected: true })
         return
       }
-      if (!prev.connected || !jsonEqual(prev.sessions, sessions)) {
-        set({ sessions, connected: true })
+      if (!prev.connected || !jsonEqual(prev.sessions, visibleSessions)) {
+        set({ sessions: visibleSessions, connected: true })
       }
     } catch {
       if (get().connected) set({ connected: false })
@@ -81,6 +112,7 @@ export const useStore = create<Store>((set, get) => ({
   createSession: async (provider, agentProfile, workingDirectory, sessionName, initialMessage, useWorktree, model) => {
     try {
       await api.createSession(provider, agentProfile, sessionName, workingDirectory, get().selectedNode, initialMessage, useWorktree, model)
+      if (sessionName) deletionBarriers(get().selectedNode).delete(sessionName)
       get().showSnackbar({ type: 'success', message: 'Session created' })
       await get().fetchSessions()
     } catch (e: any) {
@@ -89,15 +121,29 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   deleteSession: async (name) => {
+    const requestedNode = get().selectedNode
+    const deletedSession = get().sessions.find(session => session.name === name)
+    const barriers = deletionBarriers(requestedNode)
+    barriers.set(name, sessionRequestSequence)
+    set(state => ({
+      sessions: state.sessions.filter(session => session.name !== name),
+      ...(state.activeSession === name ? { activeSession: null, activeSessionDetail: null } : {}),
+    }))
     try {
-      await api.deleteSession(name, get().selectedNode)
+      await api.deleteSession(name, requestedNode)
       get().showSnackbar({ type: 'success', message: `Deleted ${name}` })
-      if (get().activeSession === name) {
-        set({ activeSession: null, activeSessionDetail: null })
-      }
-      await get().fetchSessions()
+      if (get().selectedNode === requestedNode) await get().fetchSessions()
     } catch (e: any) {
+      barriers.delete(name)
+      if (get().selectedNode === requestedNode && deletedSession) {
+        set(state => ({
+          sessions: state.sessions.some(session => session.name === name)
+            ? state.sessions
+            : [...state.sessions, deletedSession],
+        }))
+      }
       get().showSnackbar({ type: 'error', message: e.message || 'Failed to delete session' })
+      if (get().selectedNode === requestedNode) await get().fetchSessions()
     }
   },
 

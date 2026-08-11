@@ -4,7 +4,7 @@ import { StatusBadge } from '../components/StatusBadge'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { FALLBACK_PROVIDERS } from '../components/AgentPanel'
-import { mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet } from '../components/DashboardHome'
+import { acknowledgeSessionDeletions, mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet } from '../components/DashboardHome'
 import { isMouseTrackingModeSequence, isReplicateShortcut } from '../components/TerminalView'
 
 describe('terminal text selection', () => {
@@ -195,6 +195,21 @@ describe('FALLBACK_PROVIDERS', () => {
 })
 
 describe('fleet dashboard aggregation', () => {
+  it('keeps a deletion barrier until a newer poll confirms absence', () => {
+    const key = 'secure-02:tgt-race'
+    const barriers = new Map([[key, { source: 'fleet' as const, afterRequest: 3 }]])
+    const staleSession = [{ name: 'tgt-race', status: 'detached', node: 'secure-02', terminals: [] }]
+
+    acknowledgeSessionDeletions(staleSession, barriers, 'fleet', 3)
+    expect(barriers.has(key)).toBe(true)
+
+    acknowledgeSessionDeletions(staleSession, barriers, 'fleet', 4)
+    expect(barriers.has(key)).toBe(true)
+
+    acknowledgeSessionDeletions([], barriers, 'fleet', 5)
+    expect(barriers.has(key)).toBe(false)
+  })
+
   it('includes terminals from reachable nodes and preserves their node', () => {
     const sessions = sessionsFromFleet([
       {

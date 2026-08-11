@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useStore } from '../store'
 import { api, FleetCachedNode, FleetNodeOverview, TerminalMeta } from '../api'
 import { Bot, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, Filter, ArrowDownUp } from 'lucide-react'
@@ -62,6 +62,32 @@ interface LocatedTerminal {
 
 const locationKey = (node: string | null, id: string) => `${node || 'local'}:${id}`
 
+type SessionSource = 'local' | 'fleet'
+
+interface SessionDeletionBarrier {
+  source: SessionSource
+  afterRequest: number
+}
+
+export function acknowledgeSessionDeletions(
+  sessions: SessionWithTerminals[],
+  barriers: Map<string, SessionDeletionBarrier>,
+  source: SessionSource,
+  requestSequence: number,
+): void {
+  for (const [key, barrier] of barriers) {
+    // A snapshot already in flight when Delete was clicked cannot prove that
+    // deletion completed. Only a newer snapshot may release the UI barrier.
+    if (
+      barrier.source === source
+      && requestSequence > barrier.afterRequest
+      && !sessions.some(session => locationKey(session.node, session.name) === key)
+    ) {
+      barriers.delete(key)
+    }
+  }
+}
+
 export function sessionsFromFleet(overview: FleetNodeOverview[]): SessionWithTerminals[] {
   return overview.flatMap(node => node.status === 'reachable'
     ? node.sessions.map(session => ({
@@ -114,6 +140,9 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
   const [pendingDeleteSession, setPendingDeleteSession] = useState<{ name: string; node: string | null } | null>(null)
   const [deletingSession, setDeletingSession] = useState(false)
+  const deletedSessionsRef = useRef(new Map<string, SessionDeletionBarrier>())
+  const localRequestSequenceRef = useRef(0)
+  const fleetRequestSequenceRef = useRef(0)
 
   const nonEmptySessionCount = sessionData.filter(session => session.terminals.length > 0).length
 
@@ -151,7 +180,9 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
 
     const publish = () => {
       if (stopped) return
-      const sessionDetails = [...localData, ...fleetData]
+      const sessionDetails = [...localData, ...fleetData].filter(
+        session => !deletedSessionsRef.current.has(locationKey(session.node, session.name)),
+      )
       setSessionData(sessionDetails)
       sessionDetails.forEach(session => {
         const agent = session.terminals[0]
@@ -160,6 +191,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     }
 
     const fetchLocal = async () => {
+      const requestSequence = ++localRequestSequenceRef.current
       try {
         const localSessions = await api.listSessions()
         localData = await Promise.all(localSessions.map(async s => {
@@ -170,6 +202,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
             return { name: s.name, status: s.status, node: null, terminals: [] } as SessionWithTerminals
           }
         }))
+        acknowledgeSessionDeletions(localData, deletedSessionsRef.current, 'local', requestSequence)
         publish()
       } catch {
         // Preserve the last successful local snapshot during transient failures.
@@ -179,8 +212,10 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     }
 
     const fetchFleet = async () => {
+      const requestSequence = ++fleetRequestSequenceRef.current
       try {
         fleetData = sessionsFromCachedFleet(await api.getFleetState())
+        acknowledgeSessionDeletions(fleetData, deletedSessionsRef.current, 'fleet', requestSequence)
         publish()
       } catch {
         // Preserve the last successful fleet snapshot during transient failures.
@@ -238,13 +273,27 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
 
   const handleDeleteSession = async () => {
     if (!pendingDeleteSession) return
+    const target = pendingDeleteSession
+    const deletedSession = sessionData.find(session => session.name === target.name && session.node === target.node)
+    const key = locationKey(target.node, target.name)
+    const source: SessionSource = target.node ? 'fleet' : 'local'
+    deletedSessionsRef.current.set(key, {
+      source,
+      afterRequest: source === 'fleet' ? fleetRequestSequenceRef.current : localRequestSequenceRef.current,
+    })
+    setSessionData(prev => prev.filter(session => locationKey(session.node, session.name) !== key))
     setDeletingSession(true)
     try {
-      await api.deleteSession(pendingDeleteSession.name, pendingDeleteSession.node)
-      setSessionData(prev => prev.filter(session => !(session.name === pendingDeleteSession.name && session.node === pendingDeleteSession.node)))
-      showSnackbar({ type: 'success', message: `Deleted ${pendingDeleteSession.name}` })
+      await api.deleteSession(target.name, target.node)
+      showSnackbar({ type: 'success', message: `Deleted ${target.name}` })
     } catch {
-      showSnackbar({ type: 'error', message: `Failed to delete ${pendingDeleteSession.name}` })
+      deletedSessionsRef.current.delete(key)
+      if (deletedSession) {
+        setSessionData(prev => prev.some(session => locationKey(session.node, session.name) === key)
+          ? prev
+          : [...prev, deletedSession])
+      }
+      showSnackbar({ type: 'error', message: `Failed to delete ${target.name}` })
     }
     setDeletingSession(false)
     setPendingDeleteSession(null)
