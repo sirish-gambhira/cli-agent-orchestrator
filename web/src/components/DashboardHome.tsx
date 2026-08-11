@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useStore } from '../store'
 import { api, FleetCachedNode, FleetNodeOverview, TerminalMeta } from '../api'
-import { Bot, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, Filter, ArrowDownUp } from 'lucide-react'
+import { Bot, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, Filter, ArrowDownUp, FolderOpen } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
 import { InboxPanel } from './InboxPanel'
@@ -140,6 +140,8 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
   const [pendingDeleteSession, setPendingDeleteSession] = useState<{ name: string; node: string | null } | null>(null)
   const [deletingSession, setDeletingSession] = useState(false)
+  const [terminalWorkDirs, setTerminalWorkDirs] = useState<Record<string, string | null>>({})
+  const workingDirectoryRequestsRef = useRef(new Set<string>())
   const deletedSessionsRef = useRef(new Map<string, SessionDeletionBarrier>())
   const localRequestSequenceRef = useRef(0)
   const fleetRequestSequenceRef = useRef(0)
@@ -252,6 +254,26 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     const interval = setInterval(fetch, 3000)
     return () => clearInterval(interval)
   }, [sessionData.map(s => s.terminals[0] ? locationKey(s.node, s.terminals[0].id) : '').join(',')])
+
+  // Resolve each agent's live pane directory once it appears. The endpoint is
+  // node-aware, so this works for laptop and remote fleet cards alike.
+  useEffect(() => {
+    sessionData.forEach(session => {
+      const agent = session.terminals[0]
+      if (!agent) return
+      const key = locationKey(session.node, agent.id)
+      if (Object.prototype.hasOwnProperty.call(terminalWorkDirs, key) || workingDirectoryRequestsRef.current.has(key)) return
+      workingDirectoryRequestsRef.current.add(key)
+      api.getWorkingDirectory(agent.id, session.node)
+        .then(({ working_directory }) => {
+          setTerminalWorkDirs(previous => ({ ...previous, [key]: working_directory }))
+        })
+        .catch(() => {
+          // Allow a later dashboard refresh to retry after transient node loss.
+        })
+        .finally(() => workingDirectoryRequestsRef.current.delete(key))
+    })
+  }, [sessionData, terminalWorkDirs])
 
   useEffect(() => {
     api.listProfiles().then(p => setProfileCount(p.length)).catch(() => {})
@@ -414,6 +436,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
             const relCreated = fmtRel(agent.created_at)
             const relActive = fmtRel(agent.last_active)
             const showActive = relActive && relActive !== relCreated
+            const workingDirectory = terminalWorkDirs[agentKey]
             return (
               <div key={sessionKey} className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4 space-y-3">
                 <div className="flex items-start justify-between gap-3">
@@ -441,6 +464,13 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                   {relCreated && <span title={fmtAbs(agent.created_at) || ''}>{relCreated}</span>}
                   {showActive && <span title={fmtAbs(agent.last_active) || ''}>↻ {relActive}</span>}
                 </div>
+
+                {workingDirectory && (
+                  <div className="flex items-center gap-1.5 min-w-0" title={workingDirectory}>
+                    <FolderOpen size={12} className="text-gray-600 shrink-0" />
+                    <span className="text-xs font-mono text-gray-500 truncate">{workingDirectory}</span>
+                  </div>
+                )}
 
                 {!sendInputOpen[agentKey] ? (
                   <button onClick={() => setSendInputOpen(prev => ({ ...prev, [agentKey]: true }))} className="text-[10px] text-gray-600 hover:text-gray-300 transition-colors">Message agent...</button>
