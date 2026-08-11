@@ -67,6 +67,7 @@ export function AgentPanel() {
       .catch(() => setModels([]))
       .finally(() => setLoadingModels(false))
   }, [provider, selectedNode])
+
   const [sessionSearch, setSessionSearch] = useState('')
   const [inboxTerminalId, setInboxTerminalId] = useState<string | null>(null)
   const [workingDirectory, setWorkingDirectory] = useState('')
@@ -87,6 +88,14 @@ export function AgentPanel() {
   const [refreshingFleet, setRefreshingFleet] = useState(false)
   const notifiedWaiting = useRef(new Set<string>())
   const monitoredNodes = fleetOverview.filter(node => node.status === 'reachable').map(node => node.name).join(',')
+
+  useEffect(() => {
+    if (provider === 'none') {
+      setProfile('')
+      setInitialTask('')
+      setPermissionMode('bypass')
+    }
+  }, [provider])
 
   useEffect(() => { fetchFleetNodes() }, [])
 
@@ -193,7 +202,11 @@ export function AgentPanel() {
   }, [terminalStatuses, selectedNode])
 
   const handleCreate = async () => {
-    if (creatingRef.current || (provider !== 'none' && !profile.trim())) return
+    if (
+      creatingRef.current
+      || !workingDirectory.trim()
+      || (provider !== 'none' && !profile.trim())
+    ) return
     creatingRef.current = true
     setCreating(true)
     try {
@@ -658,7 +671,7 @@ export function AgentPanel() {
               </div>}
 
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Working Directory <span className="text-gray-600">(optional)</span></label>
+                <label className="block text-xs text-gray-500 mb-1">Working Directory <span className="text-red-400">*</span></label>
                 <div className="flex gap-2">
                   <div className="relative flex-1">
                     <FolderOpen size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
@@ -667,7 +680,8 @@ export function AgentPanel() {
                       value={workingDirectory}
                       onChange={e => setWorkingDirectory(e.target.value)}
                       onKeyDown={e => e.key === 'Enter' && handleCreate()}
-                      placeholder="/path/to/project (defaults to home)"
+                      placeholder="/path/to/project"
+                      required
                       className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm font-mono rounded-lg pl-9 pr-3 py-2.5 focus:border-emerald-500 focus:outline-none"
                     />
                   </div>
@@ -709,7 +723,7 @@ export function AgentPanel() {
               </button>
               <button
                 onClick={handleCreate}
-                disabled={(provider !== 'none' && !profile.trim()) || creating}
+                disabled={!workingDirectory.trim() || (provider !== 'none' && !profile.trim()) || creating}
                 className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
               >
                 <Play size={14} />
