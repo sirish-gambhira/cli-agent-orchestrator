@@ -5,6 +5,19 @@ import { ErrorBoundary } from '../components/ErrorBoundary'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { FALLBACK_PROVIDERS } from '../components/AgentPanel'
 import { mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet } from '../components/DashboardHome'
+import { isMouseTrackingModeSequence } from '../components/TerminalView'
+
+describe('terminal text selection', () => {
+  it('blocks provider mouse-tracking modes that disable xterm selection', () => {
+    expect(isMouseTrackingModeSequence([1000])).toBe(true)
+    expect(isMouseTrackingModeSequence([1002, 1006])).toBe(true)
+  })
+
+  it('does not consume unrelated or mixed private terminal modes', () => {
+    expect(isMouseTrackingModeSequence([25])).toBe(false)
+    expect(isMouseTrackingModeSequence([25, 1000])).toBe(false)
+  })
+})
 
 describe('StatusBadge', () => {
   it('renders idle status', () => {

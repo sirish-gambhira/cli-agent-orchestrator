@@ -12,6 +12,16 @@ interface TerminalViewProps {
   node?: string | null
 }
 
+// Provider TUIs commonly enable DEC mouse tracking. When xterm accepts those
+// modes it disables ordinary drag selection and forwards the drag to the
+// process instead. The fleet viewer prioritizes reliable text selection, so it
+// consumes mouse-only mode changes before xterm applies them.
+const MOUSE_TRACKING_MODES = new Set([9, 1000, 1002, 1003, 1005, 1006, 1015, 1016])
+
+export function isMouseTrackingModeSequence(params: (number | number[])[]): boolean {
+  return params.length > 0 && params.every(param => typeof param === 'number' && MOUSE_TRACKING_MODES.has(param))
+}
+
 async function copyTerminalText(text: string): Promise<boolean> {
   if (!text) return false
   try {
@@ -86,6 +96,7 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       fontSize: 14,
       fontFamily: 'JetBrains Mono, Menlo, Monaco, Consolas, monospace',
       scrollback: 10000,
+      macOptionClickForcesSelection: true,
       theme: {
         background: '#0d1117',
         foreground: '#c9d1d9',
@@ -106,6 +117,15 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
     term.loadAddon(fitAddon)
     term.open(el)
     terminalRef.current = term
+
+    const mouseModeSetDisposable = term.parser.registerCsiHandler(
+      { prefix: '?', final: 'h' },
+      isMouseTrackingModeSequence,
+    )
+    const mouseModeResetDisposable = term.parser.registerCsiHandler(
+      { prefix: '?', final: 'l' },
+      isMouseTrackingModeSequence,
+    )
 
     // Connect WebSocket
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -186,6 +206,8 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       clearTimeout(resizeTimer)
       resizeObserver.disconnect()
       selectionDisposable.dispose()
+      mouseModeSetDisposable.dispose()
+      mouseModeResetDisposable.dispose()
       terminalRef.current = null
       selectedTextRef.current = ''
       setHasSelection(false)
