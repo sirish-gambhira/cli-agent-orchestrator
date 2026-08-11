@@ -101,7 +101,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const { terminalStatuses, setTerminalStatus, clearTerminalStatuses, showSnackbar } = useStore()
   const [profileCount, setProfileCount] = useState(0)
   const [sessionData, setSessionData] = useState<SessionWithTerminals[]>([])
-  const [liveTerminal, setLiveTerminal] = useState<{ id: string; provider?: string; agentProfile?: string | null; node: string | null } | null>(null)
+  const [liveTerminal, setLiveTerminal] = useState<{ id: string; sessionName: string; provider?: string; agentProfile?: string | null; node: string | null } | null>(null)
   const [inboxTerminal, setInboxTerminal] = useState<{ id: string; node: string | null } | null>(null)
   const [outputTerminal, setOutputTerminal] = useState<{ id: string; node: string | null } | null>(null)
   const [pendingExit, setPendingExit] = useState<LocatedTerminal | null>(null)
@@ -377,7 +377,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                   <div className="flex items-center gap-1 shrink-0">
                     <button onClick={() => setInboxTerminal({ id: agent.id, node: session.node })} className="p-1.5 text-gray-500 hover:text-white bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Inbox"><Mail size={13} /></button>
                     <button onClick={() => setOutputTerminal({ id: agent.id, node: session.node })} className="p-1.5 text-gray-500 hover:text-white bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Output"><FileText size={13} /></button>
-                    <button onClick={() => setLiveTerminal({ id: agent.id, provider: agent.provider, agentProfile: agent.agent_profile, node: session.node })} className="flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-colors"><Monitor size={12} />Terminal</button>
+                    <button onClick={() => setLiveTerminal({ id: agent.id, sessionName: session.name, provider: agent.provider, agentProfile: agent.agent_profile, node: session.node })} className="flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-colors"><Monitor size={12} />Terminal</button>
                     <button onClick={() => setPendingExit({ terminal: agent, node: session.node })} disabled={exitingTerminal === agent.id} className="p-1.5 text-gray-500 hover:text-amber-400 bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Graceful exit"><LogOut size={13} /></button>
                     <button onClick={() => setPendingDeleteSession({ name: session.name, node: session.node })} className="p-1.5 text-gray-500 hover:text-red-400 bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Delete agent session"><Trash2 size={13} /></button>
                   </div>
@@ -410,7 +410,14 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       {/* Modals */}
       {inboxTerminal && <InboxPanel terminalId={inboxTerminal.id} node={inboxTerminal.node} onClose={() => setInboxTerminal(null)} />}
       {liveTerminal && (
-        <TerminalView terminalId={liveTerminal.id} provider={liveTerminal.provider} agentProfile={liveTerminal.agentProfile} node={liveTerminal.node} onClose={() => setLiveTerminal(null)} />
+        <TerminalView
+          terminalId={liveTerminal.id}
+          sessionName={liveTerminal.sessionName}
+          provider={liveTerminal.provider}
+          agentProfile={liveTerminal.agentProfile}
+          node={liveTerminal.node}
+          onClose={() => setLiveTerminal(null)}
+        />
       )}
       {outputTerminal && <OutputViewer terminalId={outputTerminal.id} node={outputTerminal.node} onClose={() => setOutputTerminal(null)} />}
       <ConfirmModal

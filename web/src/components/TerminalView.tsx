@@ -2,14 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Check, Copy, X, Terminal as TermIcon } from 'lucide-react'
+import { Check, Copy, CopyPlus, X, Terminal as TermIcon } from 'lucide-react'
+import { api, Terminal as TerminalRecord } from '../api'
 
 interface TerminalViewProps {
   terminalId: string
+  sessionName: string
   provider?: string
   agentProfile?: string | null
   onClose: () => void
   node?: string | null
+  onReplicated?: (terminal: TerminalRecord) => void
+  embedded?: boolean
+  replicationEnabled?: boolean
 }
 
 // Provider TUIs commonly enable DEC mouse tracking. When xterm accepts those
@@ -66,13 +71,18 @@ async function copyTerminalSelection(term: Terminal, text: string): Promise<bool
   return copyTerminalText(text)
 }
 
-export function TerminalView({ terminalId, provider, agentProfile, onClose, node }: TerminalViewProps) {
+export function TerminalView({ terminalId, sessionName, provider, agentProfile, onClose, node, onReplicated, embedded = false, replicationEnabled = true }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const selectedTextRef = useRef('')
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const replicatingRef = useRef(false)
+  const replicateHandlerRef = useRef<() => void>(() => {})
   const [hasSelection, setHasSelection] = useState(false)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [replicateStatus, setReplicateStatus] = useState<'idle' | 'creating' | 'created' | 'failed'>('idle')
+  const [replicateMessage, setReplicateMessage] = useState('')
+  const [replicaTerminal, setReplicaTerminal] = useState<TerminalRecord | null>(null)
 
   const showCopyResult = useCallback((copied: boolean) => {
     setCopyStatus(copied ? 'copied' : 'failed')
@@ -86,6 +96,52 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
     if (!term || !selection) return
     void copyTerminalSelection(term, selection).then(showCopyResult)
   }, [showCopyResult])
+
+  const replicateCurrentSession = useCallback(async () => {
+    if (replicatingRef.current || replicateStatus === 'created') return
+    if (!provider || !agentProfile) {
+      setReplicateStatus('failed')
+      setReplicateMessage('Provider or profile is unavailable')
+      return
+    }
+
+    replicatingRef.current = true
+    setReplicateStatus('creating')
+    setReplicateMessage(`Creating ${sessionName}-copy…`)
+    try {
+      const { working_directory: workingDirectory } = await api.getWorkingDirectory(terminalId, node)
+      const replica = await api.createSession(
+        provider,
+        agentProfile,
+        `${sessionName}-copy`,
+        workingDirectory || undefined,
+        node,
+      )
+      setReplicateStatus('created')
+      setReplicateMessage(`Created ${replica.session_name}`)
+      setReplicaTerminal(replica)
+      onReplicated?.(replica)
+    } catch (error) {
+      setReplicateStatus('failed')
+      setReplicateMessage(error instanceof Error ? error.message : 'Failed to replicate agent')
+    } finally {
+      replicatingRef.current = false
+    }
+  }, [terminalId, sessionName, provider, agentProfile, node, onReplicated, replicateStatus])
+
+  replicateHandlerRef.current = () => { void replicateCurrentSession() }
+
+  useEffect(() => {
+    if (!replicationEnabled) return
+    const handleReplicateShortcut = (event: KeyboardEvent) => {
+      if (!event.metaKey || event.ctrlKey || event.key.toLowerCase() !== 'd') return
+      event.preventDefault()
+      event.stopPropagation()
+      replicateHandlerRef.current()
+    }
+    window.addEventListener('keydown', handleReplicateShortcut, true)
+    return () => window.removeEventListener('keydown', handleReplicateShortcut, true)
+  }, [replicationEnabled])
 
   useEffect(() => {
     const el = containerRef.current
@@ -218,13 +274,14 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
 
   useEffect(() => () => clearTimeout(copyFeedbackTimerRef.current), [])
 
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col" style={{ background: '#0d1117' }}>
+  const pane = (
+    <div className="flex flex-col min-w-0 h-full" style={{ background: '#0d1117' }}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-700/50 shrink-0">
         <div className="flex items-center gap-3">
           <TermIcon size={16} className="text-emerald-400" />
-          <span className="text-sm font-mono text-gray-300">{terminalId}</span>
+          <span className="text-sm font-mono text-gray-300">{sessionName}</span>
+          <span className="text-[10px] font-mono text-gray-600">{terminalId}</span>
           {node && <span className="text-xs text-blue-300 bg-blue-900/30 px-2 py-0.5 rounded">{node}</span>}
           {provider && <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded">{provider}</span>}
           {agentProfile && <span className="text-xs text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded">{agentProfile}</span>}
@@ -233,6 +290,11 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
           <span className={`text-[10px] ${copyStatus === 'failed' ? 'text-red-400' : copyStatus === 'copied' ? 'text-emerald-400' : 'text-gray-600'}`}>
             {copyStatus === 'copied' ? 'Copied' : copyStatus === 'failed' ? 'Copy failed' : 'Select, then ⌘C / Ctrl+Shift+C'}
           </span>
+          {replicationEnabled && replicateStatus !== 'idle' && (
+            <span className={`text-[10px] max-w-64 truncate ${replicateStatus === 'failed' ? 'text-red-400' : replicateStatus === 'created' ? 'text-emerald-400' : 'text-blue-300'}`} title={replicateMessage}>
+              {replicateMessage}
+            </span>
+          )}
           <button
             onMouseDown={e => e.preventDefault()}
             onClick={copyCurrentSelection}
@@ -243,6 +305,17 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
             {copyStatus === 'copied' ? <Check size={13} /> : <Copy size={13} />}
             Copy
           </button>
+          {replicationEnabled && (
+            <button
+              onClick={() => replicateHandlerRef.current()}
+              disabled={replicateStatus === 'creating' || replicateStatus === 'created'}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-300 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 rounded transition-colors"
+              title={`Create ${sessionName}-copy without an initial task (⌘D)`}
+            >
+              <CopyPlus size={13} />
+              {replicateStatus === 'creating' ? 'Replicating…' : 'Replicate ⌘D'}
+            </button>
+          )}
           <button
             onClick={onClose}
             className="p-1 text-gray-500 hover:text-white transition-colors rounded"
@@ -256,6 +329,30 @@ export function TerminalView({ terminalId, provider, agentProfile, onClose, node
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <div ref={containerRef} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
       </div>
+    </div>
+  )
+
+  if (embedded) return pane
+
+  return (
+    <div className="fixed inset-0 z-50 flex" style={{ background: '#0d1117' }}>
+      <div className={`h-full min-w-0 ${replicaTerminal ? 'w-1/2 border-r border-gray-700' : 'w-full'}`}>
+        {pane}
+      </div>
+      {replicaTerminal && (
+        <div className="h-full min-w-0 w-1/2">
+          <TerminalView
+            terminalId={replicaTerminal.id}
+            sessionName={replicaTerminal.session_name}
+            provider={replicaTerminal.provider}
+            agentProfile={replicaTerminal.agent_profile}
+            node={node}
+            embedded
+            replicationEnabled={false}
+            onClose={() => setReplicaTerminal(null)}
+          />
+        </div>
+      )}
     </div>
   )
 }

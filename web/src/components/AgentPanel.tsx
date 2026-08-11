@@ -30,7 +30,7 @@ export function AgentPanel() {
   // Enter in the form inputs, which bypass the button's disabled state) from
   // firing before the `creating` state re-renders and creating a duplicate session.
   const creatingRef = useRef(false)
-  const [liveTerminal, setLiveTerminal] = useState<{ id: string; provider?: string; agentProfile?: string | null } | null>(null)
+  const [liveTerminal, setLiveTerminal] = useState<{ id: string; sessionName: string; provider?: string; agentProfile?: string | null } | null>(null)
   const [profiles, setProfiles] = useState<AgentProfileInfo[]>([])
   const [loadingProfiles, setLoadingProfiles] = useState(true)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
@@ -211,7 +211,8 @@ export function AgentPanel() {
   }
 
   const openTerminal = (terminalId: string, provider?: string, agentProfile?: string | null) => {
-    setLiveTerminal({ id: terminalId, provider, agentProfile })
+    if (!activeSession) return
+    setLiveTerminal({ id: terminalId, sessionName: activeSession, provider, agentProfile })
   }
 
   // Fetch working directories for terminals in session detail
@@ -467,9 +468,11 @@ export function AgentPanel() {
       {liveTerminal && (
         <TerminalView
           terminalId={liveTerminal.id}
+          sessionName={liveTerminal.sessionName}
           provider={liveTerminal.provider}
           agentProfile={liveTerminal.agentProfile}
           node={selectedNode}
+          onReplicated={() => { void fetchSessions() }}
           onClose={() => setLiveTerminal(null)}
         />
       )}
