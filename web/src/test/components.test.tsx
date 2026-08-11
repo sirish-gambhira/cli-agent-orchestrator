@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import { StatusBadge } from '../components/StatusBadge'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { ConfirmModal } from '../components/ConfirmModal'
-import { FALLBACK_PROVIDERS } from '../components/AgentPanel'
+import { canCreateSession, FALLBACK_PROVIDERS, showsAgentProfile } from '../components/AgentPanel'
 import { acknowledgeSessionDeletions, mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet } from '../components/DashboardHome'
 import { isMouseTrackingModeSequence, isReplicateShortcut } from '../components/TerminalView'
 
@@ -27,6 +27,19 @@ describe('terminal shortcuts', () => {
 
   it('does not replace Control-D terminal input', () => {
     expect(isReplicateShortcut({ metaKey: false, ctrlKey: true, key: 'd', code: 'KeyD' })).toBe(false)
+  })
+})
+
+describe('new session form', () => {
+  it('does not show or require an agent profile for the plain terminal provider', () => {
+    expect(showsAgentProfile('none')).toBe(false)
+    expect(canCreateSession('none', '', '/workspace/project')).toBe(true)
+  })
+
+  it('always requires a working directory', () => {
+    expect(canCreateSession('none', '', '   ')).toBe(false)
+    expect(canCreateSession('codex', 'developer', '')).toBe(false)
+    expect(canCreateSession('codex', 'developer', '/workspace/project')).toBe(true)
   })
 })
 

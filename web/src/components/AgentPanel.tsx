@@ -12,6 +12,9 @@ import { OutputViewer } from './OutputViewer'
 import { RemoteDirectoryPicker } from './RemoteDirectoryPicker'
 
 export const FALLBACK_PROVIDERS = ['none', 'cursor_cli', 'claude_code', 'codex']
+export const showsAgentProfile = (provider: string) => provider !== 'none'
+export const canCreateSession = (provider: string, profile: string, workingDirectory: string) =>
+  Boolean(workingDirectory.trim()) && (!showsAgentProfile(provider) || Boolean(profile.trim()))
 
 const SOURCE_LABELS: Record<string, string> = {
   'built-in': 'Built-in',
@@ -204,8 +207,7 @@ export function AgentPanel() {
   const handleCreate = async () => {
     if (
       creatingRef.current
-      || !workingDirectory.trim()
-      || (provider !== 'none' && !profile.trim())
+      || !canCreateSession(provider, profile, workingDirectory)
     ) return
     creatingRef.current = true
     setCreating(true)
@@ -574,7 +576,7 @@ export function AgentPanel() {
                 />
               </div>
 
-              {provider !== 'none' && <div>
+              {showsAgentProfile(provider) && <div>
                 <label className="block text-xs text-gray-500 mb-1">Agent Profile</label>
                 {loadingProfiles ? (
                   <div className="bg-gray-900 border border-gray-700 text-gray-500 text-sm rounded-lg px-3 py-2.5">Loading profiles...</div>
@@ -723,7 +725,7 @@ export function AgentPanel() {
               </button>
               <button
                 onClick={handleCreate}
-                disabled={!workingDirectory.trim() || (provider !== 'none' && !profile.trim()) || creating}
+                disabled={!canCreateSession(provider, profile, workingDirectory) || creating}
                 className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
               >
                 <Play size={14} />
