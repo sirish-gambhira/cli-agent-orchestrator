@@ -33,6 +33,13 @@ export function isReplicateShortcut(event: Pick<KeyboardEvent, 'metaKey' | 'ctrl
   return event.metaKey && !event.ctrlKey && (event.code === 'KeyD' || event.key.toLowerCase() === 'd')
 }
 
+export function encodeSgrWheel(direction: 'up' | 'down', column: number, row: number, count = 1): string {
+  const button = direction === 'up' ? 64 : 65
+  const safeColumn = Math.max(1, Math.floor(column))
+  const safeRow = Math.max(1, Math.floor(row))
+  return `\x1b[<${button};${safeColumn};${safeRow}M`.repeat(Math.max(1, Math.floor(count)))
+}
+
 async function copyTerminalText(text: string): Promise<boolean> {
   if (!text) return false
   try {
@@ -86,6 +93,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const replicatingRef = useRef(false)
   const replicateHandlerRef = useRef<() => void>(() => {})
+  const scrollHandlerRef = useRef<(pages: number) => boolean>(() => false)
   const [hasSelection, setHasSelection] = useState(false)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [replicateStatus, setReplicateStatus] = useState<'idle' | 'creating' | 'created' | 'failed'>('idle')
@@ -110,7 +118,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
   const scrollTerminal = useCallback((pages: number) => {
     const term = terminalRef.current
     if (!term) return
-    term.scrollPages(pages)
+    if (!scrollHandlerRef.current(pages)) term.scrollPages(pages)
     term.focus()
   }, [])
 
@@ -220,30 +228,6 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
     term.open(el)
     terminalRef.current = term
 
-    // xterm's native wheel handler can leave an unconsumed gesture to bubble
-    // into the page (especially on macOS trackpads). Own the wheel at capture
-    // phase so each pane scrolls only its own xterm buffer.
-    let wheelRemainder = 0
-    const handleTerminalWheel = (event: WheelEvent) => {
-      event.preventDefault()
-      event.stopPropagation()
-      event.stopImmediatePropagation()
-      if (!event.deltaY) return
-
-      const lines = event.deltaMode === 1
-        ? event.deltaY
-        : event.deltaMode === 2
-          ? event.deltaY * term.rows
-          : event.deltaY / 16
-      wheelRemainder += lines
-      const wholeLines = Math.trunc(wheelRemainder)
-      if (wholeLines !== 0) {
-        term.scrollLines(wholeLines)
-        wheelRemainder -= wholeLines
-      }
-    }
-    el.addEventListener('wheel', handleTerminalWheel, { capture: true, passive: false })
-
     const mouseModeSetDisposable = term.parser.registerCsiHandler(
       { prefix: '?', final: 'h' },
       isMouseTrackingModeSequence,
@@ -260,6 +244,50 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
       : `/terminals/${terminalId}/ws`
     const ws = new WebSocket(`${protocol}//${location.host}${path}`)
     ws.binaryType = 'arraybuffer'
+
+    // CAO suppresses application mouse-tracking modes so ordinary drag
+    // selection remains available. That also means xterm will not encode
+    // wheel events for the attached tmux client, so do that one piece here.
+    // tmux can then enter copy-mode for normal history or forward the wheel to
+    // an alternate-screen TUI, matching native terminal behavior.
+    const sendWheel = (direction: 'up' | 'down', count: number, clientX?: number, clientY?: number) => {
+      if (ws.readyState !== WebSocket.OPEN) return false
+      const screen = el.querySelector('.xterm-screen') as HTMLElement | null
+      const rect = (screen || el).getBoundingClientRect()
+      const x = clientX ?? rect.left + rect.width / 2
+      const y = clientY ?? rect.top + rect.height / 2
+      const column = Math.min(term.cols, Math.max(1, Math.floor(((x - rect.left) / Math.max(1, rect.width)) * term.cols) + 1))
+      const row = Math.min(term.rows, Math.max(1, Math.floor(((y - rect.top) / Math.max(1, rect.height)) * term.rows) + 1))
+      ws.send(JSON.stringify({ type: 'input', data: encodeSgrWheel(direction, column, row, Math.min(20, count)) }))
+      return true
+    }
+
+    scrollHandlerRef.current = pages => sendWheel(
+      pages < 0 ? 'up' : 'down',
+      Math.max(1, Math.round(Math.abs(pages) * 8)),
+    )
+
+    let wheelRemainder = 0
+    const handleTerminalWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      if (!event.deltaY) return
+
+      const units = event.deltaMode === 1
+        ? event.deltaY
+        : event.deltaMode === 2
+          ? event.deltaY * 8
+          : event.deltaY / 24
+      wheelRemainder += units
+      const steps = Math.trunc(wheelRemainder)
+      if (steps === 0) return
+      const sentSteps = Math.min(8, Math.abs(steps))
+      if (sendWheel(steps < 0 ? 'up' : 'down', sentSteps, event.clientX, event.clientY)) {
+        wheelRemainder -= Math.sign(steps) * sentSteps
+      }
+    }
+    el.addEventListener('wheel', handleTerminalWheel, { capture: true, passive: false })
 
     ws.onopen = () => {
       // Fit once the connection is live so we send correct dimensions
@@ -335,6 +363,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
       selectionDisposable.dispose()
       mouseModeSetDisposable.dispose()
       mouseModeResetDisposable.dispose()
+      scrollHandlerRef.current = () => false
       terminalRef.current = null
       selectedTextRef.current = ''
       setHasSelection(false)
