@@ -63,8 +63,8 @@ MANAGED_SESSION_PREFIXES = (SESSION_PREFIX, GENERATED_SESSION_PREFIX)
 # Available CLI providers - derived from the ProviderType enum for consistency
 PROVIDERS = [p.value for p in ProviderType]
 
-# Default provider used when --provider flag is not specified
-# Kiro CLI is the recommended provider for new projects
+# Default agent provider used by profile-driven CLI/workflow operations.
+# Interactive session creation has its own plain-terminal default (``none``).
 DEFAULT_PROVIDER = ProviderType.KIRO_CLI.value
 
 # =============================================================================

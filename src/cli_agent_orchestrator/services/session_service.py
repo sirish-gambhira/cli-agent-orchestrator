@@ -23,10 +23,11 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from cli_agent_orchestrator.backends.registry import get_backend
-from cli_agent_orchestrator.clients.database import list_terminals_by_session
+from cli_agent_orchestrator.clients.database import list_all_terminals, list_terminals_by_session
 from cli_agent_orchestrator.constants import MANAGED_SESSION_PREFIXES
 from cli_agent_orchestrator.models.inbox import OrchestrationType
 from cli_agent_orchestrator.models.kiro_engine import KiroEngine
+from cli_agent_orchestrator.models.provider import ProviderType
 from cli_agent_orchestrator.models.terminal import Terminal
 from cli_agent_orchestrator.plugins import (
     PluginRegistry,
@@ -36,14 +37,13 @@ from cli_agent_orchestrator.plugins import (
 from cli_agent_orchestrator.services.plugin_dispatch import dispatch_plugin_event
 from cli_agent_orchestrator.services.session_env import clear_session_env
 from cli_agent_orchestrator.services.terminal_service import create_terminal
-from cli_agent_orchestrator.utils.agent_profiles import resolve_provider
 
 logger = logging.getLogger(__name__)
 
 
 async def create_session(
     provider: str | None,
-    agent_profile: str,
+    agent_profile: str | None,
     session_name: str | None = None,
     working_directory: str | None = None,
     allowed_tools: list[str] | None = None,
@@ -82,10 +82,11 @@ async def create_session(
     if initial_message is None and initial_message_orchestration_type is not None:
         raise ValueError("initial_message_orchestration_type requires initial_message")
 
-    if provider is None:
-        resolved_provider = resolve_provider(agent_profile, fallback_provider="kiro_cli")
-    else:
-        resolved_provider = provider
+    resolved_provider = provider or ProviderType.NONE.value
+    if resolved_provider == ProviderType.NONE.value:
+        agent_profile = None
+    elif not agent_profile:
+        raise ValueError(f"provider '{resolved_provider}' requires an agent profile")
 
     terminal = await create_terminal(
         provider=resolved_provider,
@@ -118,10 +119,16 @@ async def create_session(
 
 
 def list_sessions() -> List[Dict]:
-    """List all sessions from tmux."""
+    """List CAO sessions, including explicitly named database-backed sessions."""
     try:
         tmux_sessions = get_backend().list_sessions()
-        return [s for s in tmux_sessions if s["id"].startswith(MANAGED_SESSION_PREFIXES)]
+        database_sessions = {item["tmux_session"] for item in list_all_terminals()}
+        return [
+            session
+            for session in tmux_sessions
+            if session["id"].startswith(MANAGED_SESSION_PREFIXES)
+            or session["id"] in database_sessions
+        ]
     except Exception as e:
         logger.error(f"Failed to list sessions: {e}")
         return []

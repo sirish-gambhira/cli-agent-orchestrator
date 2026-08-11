@@ -4,6 +4,7 @@ from enum import Enum
 class ProviderType(str, Enum):
     """Provider type enumeration."""
 
+    NONE = "none"
     KIRO_CLI = "kiro_cli"
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"

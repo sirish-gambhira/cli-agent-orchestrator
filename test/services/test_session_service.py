@@ -19,21 +19,19 @@ class TestCreateSession:
     @pytest.mark.asyncio
     @patch("cli_agent_orchestrator.services.session_service.dispatch_plugin_event")
     @patch("cli_agent_orchestrator.services.session_service.create_terminal")
-    @patch("cli_agent_orchestrator.services.session_service.resolve_provider")
-    async def test_create_session_resolves_provider_when_omitted(
-        self, mock_resolve, mock_create_terminal, mock_dispatch
+    async def test_create_session_defaults_to_plain_terminal(
+        self, mock_create_terminal, mock_dispatch
     ):
-        """When provider is None, resolve_provider is called and its result forwarded."""
-        mock_resolve.return_value = "claude_code"
+        """An omitted provider opens a plain terminal without a profile."""
         mock_terminal = MagicMock()
-        mock_terminal.session_name = "cao-test"
+        mock_terminal.session_name = "test"
         mock_create_terminal.return_value = mock_terminal
 
-        await create_session(provider=None, agent_profile="my_agent")
+        await create_session(provider=None, agent_profile=None, session_name="test")
 
-        mock_resolve.assert_called_once_with("my_agent", fallback_provider="kiro_cli")
         call_kwargs = mock_create_terminal.call_args.kwargs
-        assert call_kwargs["provider"] == "claude_code"
+        assert call_kwargs["provider"] == "none"
+        assert call_kwargs["agent_profile"] is None
         assert call_kwargs["defer_init"] is False
         assert call_kwargs["initial_message"] is None
         assert call_kwargs["model"] is None
@@ -41,19 +39,23 @@ class TestCreateSession:
     @pytest.mark.asyncio
     @patch("cli_agent_orchestrator.services.session_service.dispatch_plugin_event")
     @patch("cli_agent_orchestrator.services.session_service.create_terminal")
-    @patch("cli_agent_orchestrator.services.session_service.resolve_provider")
-    async def test_create_session_uses_explicit_provider(
-        self, mock_resolve, mock_create_terminal, mock_dispatch
-    ):
-        """When provider is explicitly passed, resolve_provider is NOT called."""
+    async def test_create_session_uses_explicit_provider(self, mock_create_terminal, mock_dispatch):
+        """An explicit agent provider and profile are forwarded."""
         mock_terminal = MagicMock()
         mock_terminal.session_name = "cao-test"
         mock_create_terminal.return_value = mock_terminal
 
         await create_session(provider="kiro_cli", agent_profile="my_agent")
 
-        mock_resolve.assert_not_called()
         assert mock_create_terminal.call_args.kwargs["provider"] == "kiro_cli"
+
+    @pytest.mark.asyncio
+    @patch("cli_agent_orchestrator.services.session_service.create_terminal")
+    async def test_agent_provider_requires_profile(self, mock_create_terminal):
+        with pytest.raises(ValueError, match="requires an agent profile"):
+            await create_session(provider="codex", agent_profile=None)
+
+        mock_create_terminal.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("cli_agent_orchestrator.services.session_service.dispatch_plugin_event")
@@ -138,8 +140,9 @@ class TestCreateSession:
 class TestListSessions:
     """Tests for list_sessions function."""
 
+    @patch("cli_agent_orchestrator.services.session_service.list_all_terminals")
     @patch("cli_agent_orchestrator.services.session_service.get_backend")
-    def test_list_sessions_success(self, mock_get_backend):
+    def test_list_sessions_success(self, mock_get_backend, mock_list_all):
         """Test listing sessions successfully."""
         mock_get_backend.return_value.list_sessions.return_value = [
             {"id": "cao-session1", "name": "Session 1"},
@@ -147,13 +150,22 @@ class TestListSessions:
             {"id": "other-session", "name": "Other"},
         ]
 
+        mock_list_all.return_value = [{"tmux_session": "custom-session"}]
+        mock_get_backend.return_value.list_sessions.return_value.append(
+            {"id": "custom-session", "name": "Custom"}
+        )
+
         result = list_sessions()
 
-        assert len(result) == 2
-        assert all(s["id"].startswith("cao-") for s in result)
+        assert [session["id"] for session in result] == [
+            "cao-session1",
+            "cao-session2",
+            "custom-session",
+        ]
 
+    @patch("cli_agent_orchestrator.services.session_service.list_all_terminals", return_value=[])
     @patch("cli_agent_orchestrator.services.session_service.get_backend")
-    def test_list_sessions_empty(self, mock_get_backend):
+    def test_list_sessions_empty(self, mock_get_backend, mock_list_all):
         """Test listing sessions when none exist."""
         mock_get_backend.return_value.list_sessions.return_value = []
 
@@ -161,8 +173,9 @@ class TestListSessions:
 
         assert result == []
 
+    @patch("cli_agent_orchestrator.services.session_service.list_all_terminals", return_value=[])
     @patch("cli_agent_orchestrator.services.session_service.get_backend")
-    def test_list_sessions_no_cao_sessions(self, mock_get_backend):
+    def test_list_sessions_no_cao_sessions(self, mock_get_backend, mock_list_all):
         """Test listing sessions when no CAO sessions exist."""
         mock_get_backend.return_value.list_sessions.return_value = [
             {"id": "other-session1", "name": "Other 1"},

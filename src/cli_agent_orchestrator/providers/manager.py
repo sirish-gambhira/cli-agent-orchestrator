@@ -17,6 +17,7 @@ from cli_agent_orchestrator.providers.kimi_cli import KimiCliProvider
 from cli_agent_orchestrator.providers.kiro_capabilities import KiroPhase0KASError
 from cli_agent_orchestrator.providers.kiro_cli import KiroCliProvider
 from cli_agent_orchestrator.providers.mock_cli import MockCliProvider
+from cli_agent_orchestrator.providers.none import NoneProvider
 from cli_agent_orchestrator.providers.opencode_cli import OpenCodeCliProvider
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,14 @@ class ProviderManager:
         """Create and store provider instance."""
         try:
             provider: BaseProvider
-            if provider_type == ProviderType.KIRO_CLI.value:
+            if provider_type == ProviderType.NONE.value:
+                provider = NoneProvider(
+                    terminal_id,
+                    tmux_session,
+                    tmux_window,
+                    allowed_tools,
+                )
+            elif provider_type == ProviderType.KIRO_CLI.value:
                 if not agent_profile:
                     raise ValueError("Kiro CLI provider requires agent_profile parameter")
                 resolved_engine = resolve_kiro_engine(persisted=engine)

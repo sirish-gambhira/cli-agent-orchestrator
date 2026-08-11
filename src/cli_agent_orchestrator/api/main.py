@@ -97,6 +97,7 @@ from cli_agent_orchestrator.models.memory import (
     MemoryScopeId,
     MemoryType,
 )
+from cli_agent_orchestrator.models.provider import ProviderType
 from cli_agent_orchestrator.models.terminal import Terminal, TerminalId
 from cli_agent_orchestrator.plugins import PluginRegistry
 from cli_agent_orchestrator.providers.kiro_capabilities import (
@@ -156,7 +157,7 @@ from cli_agent_orchestrator.services.step_output_store import _validate_key_part
 from cli_agent_orchestrator.services.terminal_service import OutputMode, TerminalInputBlockedError
 from cli_agent_orchestrator.services.worktree_service import WorktreeError
 from cli_agent_orchestrator.telemetry import init_telemetry, shutdown_telemetry
-from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile, resolve_provider
+from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile
 from cli_agent_orchestrator.utils.env import ensure_user_executable_path
 from cli_agent_orchestrator.utils.logging import install_access_log_redaction, setup_logging
 from cli_agent_orchestrator.utils.skills import (
@@ -2213,13 +2214,14 @@ async def install_agent_profile_endpoint(
 async def list_providers_endpoint() -> List[Dict]:
     """List available providers with installation status."""
     provider_binaries = {
+        "none": "",
         "claude_code": "claude",
         "codex": "codex",
         "cursor_cli": "agent",
     }
     result = []
     for provider, binary in provider_binaries.items():
-        installed = shutil.which(binary) is not None
+        installed = not binary or shutil.which(binary) is not None
         result.append({"name": provider, "binary": binary, "installed": installed})
     return result
 
@@ -2405,7 +2407,7 @@ async def get_skill_content(name: str) -> SkillContentResponse:
 async def create_session(
     request: Request,
     background_tasks: BackgroundTasks,
-    agent_profile: str,
+    agent_profile: Optional[str] = None,
     provider: Optional[str] = None,
     session_name: Optional[str] = None,
     working_directory: Optional[str] = None,
@@ -2461,22 +2463,7 @@ async def create_session(
     # before this function body ever runs.
     try:
         if session_name is not None:
-            # terminal_service.create_terminal prepends SESSION_PREFIX
-            # ("cao-") if missing, so an API caller's 64-char valid name
-            # would become 68 chars and fail downstream validation. Check
-            # the *effective* prefixed value here so the rejection happens
-            # at the boundary with a clear message.
-            from cli_agent_orchestrator.constants import (
-                MANAGED_SESSION_PREFIXES,
-                SESSION_PREFIX,
-            )
-
-            effective = (
-                session_name
-                if session_name.startswith(MANAGED_SESSION_PREFIXES)
-                else f"{SESSION_PREFIX}{session_name}"
-            )
-            validate_tmux_name(effective, "session_name")
+            validate_tmux_name(session_name, "session_name")
         if model is not None:
             _validate_model_id(model)
         if initial_message == "":
@@ -2623,7 +2610,7 @@ async def delete_session(
 async def create_terminal_in_session(
     request: Request,
     session_name: str,
-    agent_profile: str,
+    agent_profile: Optional[str] = None,
     provider: Optional[str] = None,
     working_directory: Optional[str] = None,
     allowed_tools: Optional[str] = None,
@@ -2672,10 +2659,9 @@ async def create_terminal_in_session(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     try:
-        if provider is None:
-            resolved_provider = resolve_provider(agent_profile, fallback_provider="kiro_cli")
-        else:
-            resolved_provider = provider
+        resolved_provider = provider or ProviderType.NONE.value
+        if resolved_provider != ProviderType.NONE.value and not agent_profile:
+            raise ValueError(f"provider '{resolved_provider}' requires an agent profile")
 
         # Parse comma-separated allowed_tools string into list
         allowed_tools_list = allowed_tools.split(",") if allowed_tools else None

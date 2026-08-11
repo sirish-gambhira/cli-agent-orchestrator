@@ -11,7 +11,7 @@ import { StatusBadge } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
 import { RemoteDirectoryPicker } from './RemoteDirectoryPicker'
 
-export const FALLBACK_PROVIDERS = ['cursor_cli', 'claude_code', 'codex']
+export const FALLBACK_PROVIDERS = ['none', 'cursor_cli', 'claude_code', 'codex']
 
 const SOURCE_LABELS: Record<string, string> = {
   'built-in': 'Built-in',
@@ -23,7 +23,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 export function AgentPanel() {
   const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, deleteSession, terminalStatuses, setTerminalStatus, fleetNodes, selectedNode, fetchFleetNodes, selectNode } = useStore()
-  const [provider, setProvider] = useState('kiro_cli')
+  const [provider, setProvider] = useState('none')
   const [profile, setProfile] = useState('')
   const [creating, setCreating] = useState(false)
   // Synchronous in-flight lock: prevents a second submit (rapid double-click or
@@ -44,9 +44,9 @@ export function AgentPanel() {
     api.listProviders(selectedNode)
       .then(p => {
         setProviders(p)
-        // Default to first installed provider
-        const firstInstalled = p.find(prov => prov.installed)
-        if (firstInstalled) setProvider(firstInstalled.name)
+        const defaultProvider = p.find(prov => prov.name === 'none' && prov.installed)
+          || p.find(prov => prov.installed)
+        if (defaultProvider) setProvider(defaultProvider.name)
       })
       .catch(() => {})
   }, [selectedNode])
@@ -193,11 +193,20 @@ export function AgentPanel() {
   }, [terminalStatuses, selectedNode])
 
   const handleCreate = async () => {
-    if (creatingRef.current || !profile.trim()) return
+    if (creatingRef.current || (provider !== 'none' && !profile.trim())) return
     creatingRef.current = true
     setCreating(true)
     try {
-      await createSession(provider, profile.trim(), workingDirectory.trim() || undefined, sessionName.trim() || undefined, initialTask.trim() || undefined, useWorktree, model || undefined, permissionMode)
+      await createSession(
+        provider,
+        provider === 'none' ? undefined : profile.trim(),
+        workingDirectory.trim() || undefined,
+        sessionName.trim() || undefined,
+        provider === 'none' ? undefined : initialTask.trim() || undefined,
+        useWorktree,
+        provider === 'none' ? undefined : model || undefined,
+        provider === 'none' ? undefined : permissionMode,
+      )
       setShowSpawnModal(false)
       setProfile('')
       setWorkingDirectory('')
@@ -552,7 +561,7 @@ export function AgentPanel() {
                 />
               </div>
 
-              <div>
+              {provider !== 'none' && <div>
                 <label className="block text-xs text-gray-500 mb-1">Agent Profile</label>
                 {loadingProfiles ? (
                   <div className="bg-gray-900 border border-gray-700 text-gray-500 text-sm rounded-lg px-3 py-2.5">Loading profiles...</div>
@@ -577,7 +586,7 @@ export function AgentPanel() {
                     className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5 focus:border-emerald-500 focus:outline-none"
                   />
                 )}
-              </div>
+              </div>}
 
               {provider === 'cursor_cli' && (
                 <div>
@@ -637,7 +646,7 @@ export function AgentPanel() {
                 </div>
               </div>
 
-              <div>
+              {provider !== 'none' && <div>
                 <label className="block text-xs text-gray-500 mb-1">Task <span className="text-gray-600">(optional)</span></label>
                 <textarea
                   value={initialTask}
@@ -646,7 +655,7 @@ export function AgentPanel() {
                   rows={4}
                   className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5 focus:border-emerald-500 focus:outline-none resize-y"
                 />
-              </div>
+              </div>}
 
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Working Directory <span className="text-gray-600">(optional)</span></label>
@@ -700,11 +709,11 @@ export function AgentPanel() {
               </button>
               <button
                 onClick={handleCreate}
-                disabled={!profile.trim() || creating}
+                disabled={(provider !== 'none' && !profile.trim()) || creating}
                 className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
               >
                 <Play size={14} />
-                {creating ? 'Creating...' : 'Create Agent Session'}
+                {creating ? 'Creating...' : provider === 'none' ? 'Open Terminal' : 'Create Agent Session'}
               </button>
             </div>
           </div>

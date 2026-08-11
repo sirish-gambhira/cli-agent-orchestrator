@@ -307,7 +307,7 @@ class TestCreateTerminalCleanup:
         return_value="tid1",
     )
     @patch("cli_agent_orchestrator.services.terminal_service.load_agent_profile")
-    async def test_session_prefix_added_for_new_session(
+    async def test_explicit_session_name_is_preserved(
         self,
         mock_load_profile,
         mock_tid,
@@ -319,7 +319,7 @@ class TestCreateTerminalCleanup:
         mock_fifo_manager,
         mock_status_monitor,
     ):
-        """New sessions without the prefix get it added automatically."""
+        """Explicit session names reach the backend unchanged."""
         from cli_agent_orchestrator.services.terminal_service import create_terminal
 
         mock_tmux.session_exists.return_value = False
@@ -339,9 +339,9 @@ class TestCreateTerminalCleanup:
             allowed_tools=["*"],
         )
 
-        # session_name should have been prefixed with "cao-"
         args = mock_tmux.create_session.call_args
-        assert args[0][0] == "cao-myses"
+        assert args[0][0] == "myses"
+        assert result.session_name == "myses"
 
 
 class TestCreateTerminalSessionCleanupGuard:

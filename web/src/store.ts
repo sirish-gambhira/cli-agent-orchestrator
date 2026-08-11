@@ -38,7 +38,7 @@ interface Store {
 
   fetchSessions: () => Promise<void>
   selectSession: (name: string | null) => Promise<void>
-  createSession: (provider: string, agentProfile: string, workingDirectory?: string, sessionName?: string, initialMessage?: string, useWorktree?: boolean, model?: string, permissionMode?: PermissionMode) => Promise<void>
+  createSession: (provider: string, agentProfile?: string, workingDirectory?: string, sessionName?: string, initialMessage?: string, useWorktree?: boolean, model?: string, permissionMode?: PermissionMode) => Promise<void>
   deleteSession: (name: string) => Promise<void>
   showSnackbar: (snackbar: Snackbar) => void
   hideSnackbar: () => void

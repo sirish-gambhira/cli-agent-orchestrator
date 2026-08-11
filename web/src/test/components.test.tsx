@@ -169,7 +169,7 @@ describe('ConfirmModal', () => {
 
 describe('FALLBACK_PROVIDERS', () => {
   it('contains only the fleet MVP providers', () => {
-    expect(FALLBACK_PROVIDERS).toEqual(['cursor_cli', 'claude_code', 'codex'])
+    expect(FALLBACK_PROVIDERS).toEqual(['none', 'cursor_cli', 'claude_code', 'codex'])
   })
 
   it('maps to enabled select options with default underscore label', () => {
@@ -190,7 +190,7 @@ describe('FALLBACK_PROVIDERS', () => {
     const noProviders: any[] = []
     const effective = noProviders.length > 0 ? noProviders : FALLBACK_PROVIDERS.map(n => ({ name: n, binary: '', installed: true }))
     const names = effective.map(p => p.name)
-    expect(names).toEqual(['cursor_cli', 'claude_code', 'codex'])
+    expect(names).toEqual(['none', 'cursor_cli', 'claude_code', 'codex'])
   })
 })
 

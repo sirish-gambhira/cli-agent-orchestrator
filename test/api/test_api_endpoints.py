@@ -124,8 +124,9 @@ class TestAgentProviders:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
+        assert len(data) == 4
         names = [p["name"] for p in data]
+        assert names[0] == "none"
         assert "claude_code" in names
         assert "codex" in names
         assert "cursor_cli" in names
@@ -139,8 +140,10 @@ class TestAgentProviders:
 
         assert response.status_code == 200
         data = response.json()
-        for p in data:
-            assert p["installed"] is False
+        providers = {p["name"]: p for p in data}
+        assert providers["none"]["installed"] is True
+        for name in ("claude_code", "codex", "cursor_cli"):
+            assert providers[name]["installed"] is False
 
     def test_list_providers_mixed_installed(self, client):
         """GET /agents/providers returns mixed installation status."""
@@ -154,6 +157,7 @@ class TestAgentProviders:
         assert response.status_code == 200
         data = response.json()
         providers_dict = {p["name"]: p for p in data}
+        assert providers_dict["none"]["binary"] == ""
         assert providers_dict["claude_code"]["installed"] is True
         assert providers_dict["codex"]["installed"] is False
         assert providers_dict["cursor_cli"]["installed"] is False
@@ -307,6 +311,27 @@ class TestCreateSession:
             group=None,
             metadata=None,
         )
+
+    def test_create_plain_terminal_needs_no_profile_or_permission_mode(self, client):
+        """The default provider opens a shell without agent-only selections."""
+        mock_terminal = Terminal(
+            id="abcd1234",
+            name="terminal-1234",
+            session_name="shell-session",
+            provider="none",
+            agent_profile=None,
+        )
+        with patch("cli_agent_orchestrator.api.main.session_service") as mock_svc:
+            mock_svc.create_session = AsyncMock(return_value=mock_terminal)
+            response = client.post("/sessions", params={"session_name": "shell-session"})
+
+        assert response.status_code == 201
+        assert response.json()["provider"] == "none"
+        assert response.json()["agent_profile"] is None
+        call_kwargs = mock_svc.create_session.call_args.kwargs
+        assert call_kwargs["provider"] is None
+        assert call_kwargs["agent_profile"] is None
+        assert "permission_mode" not in call_kwargs
 
     def test_create_session_passes_explicit_kiro_engine(self, client):
         """An explicit engine reaches the session service and the response."""
@@ -570,12 +595,7 @@ class TestCreateSession:
 
     @pytest.mark.parametrize(
         "bad_name",
-        # NB: '-leading' is not in this set — terminal_service prepends the
-        # SESSION_PREFIX 'cao-' so the effective name becomes 'cao--leading',
-        # which is a valid tmux target (no leading dash). The boundary check
-        # validates the prefixed value, so leading-dash inputs are accepted
-        # here but rejected on path-param routes that have no prefixing.
-        ["evil:name", "evil.name", "with space", "../escape", "name;rm"],
+        ["-leading", "evil:name", "evil.name", "with space", "../escape", "name;rm"],
     )
     def test_create_session_rejects_unsafe_name(self, client, bad_name):
         """POST /sessions rejects session names that could break tmux target parsing."""
@@ -593,27 +613,30 @@ class TestCreateSession:
         assert "session_name" in response.json()["detail"]
         mock_svc.create_session.assert_not_called()
 
-    def test_create_session_rejects_name_that_overflows_after_prefix(self, client):
-        """A 64-char name (max valid) becomes 68 chars after the cao- prefix
-        is prepended by terminal_service. The boundary check must catch this
-        with a 400 instead of letting it slip through to a sink failure.
-        """
-        # 64 ascii chars — passes the validator on its own, but cao-prefixed
-        # is 68 chars, exceeds the 64-char cap, must be rejected.
+    def test_create_session_accepts_max_length_name_without_prefixing(self, client):
+        """An explicit valid name is passed through verbatim at the 64-char limit."""
         long_name = "a" * 64
         with patch("cli_agent_orchestrator.api.main.session_service") as mock_svc:
+            mock_svc.create_session = AsyncMock(
+                return_value=Terminal(
+                    id="abcd1234",
+                    name="terminal-abcd",
+                    session_name=long_name,
+                    provider="none",
+                    agent_profile=None,
+                )
+            )
             response = client.post(
                 "/sessions",
                 params={
-                    "provider": "kiro_cli",
-                    "agent_profile": "developer",
+                    "provider": "none",
                     "session_name": long_name,
                 },
             )
 
-        assert response.status_code == 400
-        assert "session_name" in response.json()["detail"]
-        mock_svc.create_session.assert_not_called()
+        assert response.status_code == 201
+        assert response.json()["session_name"] == long_name
+        assert mock_svc.create_session.call_args.kwargs["session_name"] == long_name
 
     def test_create_session_accepts_already_prefixed_name(self, client):
         """An already-prefixed valid name should not be double-prefixed in

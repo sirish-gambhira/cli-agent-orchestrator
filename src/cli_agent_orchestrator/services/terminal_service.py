@@ -43,9 +43,7 @@ from cli_agent_orchestrator.clients.database import (
 )
 from cli_agent_orchestrator.constants import (
     FIFO_DIR,
-    MANAGED_SESSION_PREFIXES,
     PIPE_LIVENESS_TAIL_LINES,
-    SESSION_PREFIX,
     TERMINAL_LOG_DIR,
 )
 from cli_agent_orchestrator.models.agent_profile import AgentProfile
@@ -162,7 +160,7 @@ SOFT_ENFORCEMENT_PROVIDERS = {
 
 async def create_terminal(
     provider: str,
-    agent_profile: str,
+    agent_profile: Optional[str],
     session_name: Optional[str] = None,
     new_session: bool = False,
     working_directory: Optional[str] = None,
@@ -192,7 +190,7 @@ async def create_terminal(
 
     Args:
         provider: Provider type string (e.g., "kiro_cli", "claude_code")
-        agent_profile: Name of the agent profile to use
+        agent_profile: Name of the agent profile to use, or None for a plain terminal
         session_name: Optional custom session name. If not provided, auto-generated.
         new_session: If True, creates a new tmux session. If False, adds to existing.
         working_directory: Optional working directory for the terminal shell
@@ -253,6 +251,17 @@ async def create_terminal(
     # ran (use_worktree=False) or itself failed before create_worktree returned.
     worktree_repo_root: Optional[str] = None
     try:
+        if provider == ProviderType.NONE.value:
+            agent_profile = None
+            if initial_message is not None:
+                raise ValueError("provider 'none' opens a plain terminal and does not accept a task")
+            if permission_mode is not None:
+                raise ValueError("provider 'none' does not use permission_mode")
+            if model is not None:
+                raise ValueError("provider 'none' does not use a model")
+            if engine is not None:
+                raise ValueError("provider 'none' does not use a Kiro engine")
+
         if permission_mode is not None:
             if permission_mode not in {"prompt", "bypass"}:
                 raise ValueError("permission_mode must be 'prompt' or 'bypass'")
@@ -267,10 +276,13 @@ async def create_terminal(
         # Resolve profile policy and Kiro engine BEFORE allocating any backend
         # resource. A KAS request must probe then fail closed with no window,
         # database row, FIFO, Herdr registration, or provider process.
-        try:
-            profile = load_agent_profile(agent_profile)
-        except FileNotFoundError:
+        if agent_profile is None:
             profile = None
+        else:
+            try:
+                profile = load_agent_profile(agent_profile)
+            except FileNotFoundError:
+                profile = None
         # Production loaders return AgentProfile. Treat a test double or an
         # otherwise malformed object as no selected profile rather than
         # accepting arbitrary attributes as configuration.
@@ -326,7 +338,7 @@ async def create_terminal(
         if not session_name:
             session_name = generate_session_name()
 
-        window_name = generate_window_name(agent_profile)
+        window_name = generate_window_name(agent_profile or "terminal")
 
         # Step 1b: Provision an isolated git worktree (issue #100, Phase 1) before
         # the tmux session/window below consumes `working_directory` -- the
@@ -352,12 +364,6 @@ async def create_terminal(
 
         # Step 2: Create tmux session or window
         if new_session:
-            # Preserve both legacy cao-* sessions and new tgt-* generated
-            # sessions. Only explicit unprefixed names receive the legacy
-            # normalization prefix.
-            if not session_name.startswith(MANAGED_SESSION_PREFIXES):
-                session_name = f"{SESSION_PREFIX}{session_name}"
-
             # Prevent duplicate sessions
             if get_backend().session_exists(session_name):
                 raise ValueError(f"Session '{session_name}' already exists")
@@ -620,7 +626,7 @@ async def create_terminal(
                 get_backend().kill_window(session_name, window_name)
             except Exception:
                 pass  # Ignore cleanup errors
-        if worktree_repo_root is not None:
+        if worktree_repo_root is not None and terminal_id is not None:
             # A worktree WAS created (Step 1b succeeded) before some later step
             # failed -- roll it back too, same best-effort posture as everything
             # else in this block. Without this, a provider-init timeout (or any
@@ -1173,7 +1179,8 @@ def send_input(
         # plugins/webhooks see what the caller sent — not the
         # internal <cao-memory> block that we paste into the TUI.
         original_message = message
-        message = inject_memory_context(message, terminal_id)
+        if metadata.get("provider") != ProviderType.NONE.value:
+            message = inject_memory_context(message, terminal_id)
 
         # Check how many Enter keys the provider needs after paste
         enter_count = provider.paste_enter_count if provider else 1
