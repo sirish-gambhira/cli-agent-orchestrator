@@ -264,6 +264,14 @@ class TerminalBackend(ABC):
         """
         ...
 
+    def scroll_view(self, session_name: str, window_name: str, direction: str, lines: int) -> bool:
+        """Scroll an attached terminal view using backend-native history.
+
+        Backends without a native scroll facility return False so callers can
+        fall back to terminal-emulator scrollback.
+        """
+        return False
+
     # --- Pipe-pane (logging) ---
 
     @abstractmethod

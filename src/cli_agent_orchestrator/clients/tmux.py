@@ -1043,6 +1043,46 @@ class TmuxClient:
             logger.error(f"Failed to get pane command for {session_name}:{window_name}: {e}")
             return None
 
+    def scroll_view(self, session_name: str, window_name: str, direction: str, lines: int) -> bool:
+        """Scroll a pane using tmux copy-mode or TUI navigation.
+
+        Normal-screen history is owned by tmux, not the browser-side xterm
+        attached later. Alternate-screen TUIs own their own viewport, so route
+        wheel movement as Up/Down keys in that case, following tmux's official
+        mouse-wheel recipe.
+        """
+        if direction not in {"up", "down"}:
+            return False
+        lines = max(1, min(100, int(lines)))
+        try:
+            session = self._find_session(session_name)
+            if not session:
+                return False
+            window = self._find_window(session, session_name, window_name)
+            if not window:
+                return False
+            pane = self._find_active_pane(window, session_name, window_name)
+            if not pane:
+                return False
+
+            result = pane.cmd("display-message", "-p", "#{pane_in_mode} #{alternate_on}")
+            state = result.stdout[0].strip().split() if result.stdout else []
+            in_mode = len(state) == 2 and state[0] == "1"
+            alternate_on = len(state) == 2 and state[1] == "1"
+
+            if in_mode:
+                pane.cmd("send-keys", "-X", "-N", str(lines), f"scroll-{direction}")
+            elif alternate_on:
+                pane.cmd("send-keys", "-N", str(max(1, lines // 3)), direction.title())
+            elif direction == "up":
+                pane.cmd("copy-mode", "-e")
+                pane.cmd("send-keys", "-X", "-N", str(lines), "scroll-up")
+            # Scrolling down at the live bottom is intentionally a no-op.
+            return True
+        except Exception as e:
+            logger.error(f"Failed to scroll {session_name}:{window_name}: {e}")
+            return False
+
     def pipe_pane(self, session_name: str, window_name: str, file_path: str) -> None:
         """Start piping pane output to file.
 

@@ -742,6 +742,40 @@ class TestGetPaneCurrentCommand:
         assert result is None
 
 
+class TestScrollView:
+    @staticmethod
+    def _pane(tmux, state):
+        mock_pane = MagicMock()
+        mock_pane.cmd.return_value.stdout = [state]
+        mock_window = MagicMock()
+        mock_window.active_pane = mock_pane
+        mock_session = MagicMock()
+        mock_session.windows.get.return_value = mock_window
+        tmux.server.sessions.get.return_value = mock_session
+        return mock_pane
+
+    def test_enters_copy_mode_for_normal_history(self, tmux):
+        pane = self._pane(tmux, "0 0")
+
+        assert tmux.scroll_view("ses", "win", "up", 6) is True
+        assert pane.cmd.call_args_list == [
+            call("display-message", "-p", "#{pane_in_mode} #{alternate_on}"),
+            call("copy-mode", "-e"),
+            call("send-keys", "-X", "-N", "6", "scroll-up"),
+        ]
+
+    def test_scrolls_existing_copy_mode(self, tmux):
+        pane = self._pane(tmux, "1 0")
+
+        assert tmux.scroll_view("ses", "win", "down", 4) is True
+        pane.cmd.assert_called_with("send-keys", "-X", "-N", "4", "scroll-down")
+
+    def test_routes_alternate_screen_scroll_to_tui(self, tmux):
+        pane = self._pane(tmux, "0 1")
+
+        assert tmux.scroll_view("ses", "win", "up", 9) is True
+        pane.cmd.assert_called_with("send-keys", "-N", "3", "Up")
+
 class TestPaneIsBracketedPasteIncompatible:
     @pytest.mark.parametrize(
         "shell", ["sh", "dash", "bash", "zsh", "ksh", "mksh", "csh", "tcsh", "fish", "ash"]

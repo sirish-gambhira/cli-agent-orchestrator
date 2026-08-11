@@ -138,6 +138,9 @@ class TmuxBackend(TerminalBackend):
         """Return the tmux command used by the browser PTY WebSocket."""
         return ["tmux", "-u", "attach-session", "-t", f"{session_name}:{window_name}"]
 
+    def scroll_view(self, session_name: str, window_name: str, direction: str, lines: int) -> bool:
+        return self._client.scroll_view(session_name, window_name, direction, lines)
+
     # --- Pipe-pane ---
 
     def pipe_pane(self, session_name: str, window_name: str, file_path: str) -> None:

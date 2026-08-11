@@ -5,14 +5,9 @@ import { ErrorBoundary } from '../components/ErrorBoundary'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { FALLBACK_PROVIDERS } from '../components/AgentPanel'
 import { mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet } from '../components/DashboardHome'
-import { encodeSgrWheel, isMouseTrackingModeSequence, isReplicateShortcut } from '../components/TerminalView'
+import { isMouseTrackingModeSequence, isReplicateShortcut } from '../components/TerminalView'
 
 describe('terminal text selection', () => {
-  it('encodes wheel input using the SGR mouse protocol understood by tmux', () => {
-    expect(encodeSgrWheel('up', 12.9, 4.2)).toBe('\x1b[<64;12;4M')
-    expect(encodeSgrWheel('down', 0, 0, 2)).toBe('\x1b[<65;1;1M\x1b[<65;1;1M')
-  })
-
   it('blocks provider mouse-tracking modes that disable xterm selection', () => {
     expect(isMouseTrackingModeSequence([1000])).toBe(true)
     expect(isMouseTrackingModeSequence([1002, 1006])).toBe(true)

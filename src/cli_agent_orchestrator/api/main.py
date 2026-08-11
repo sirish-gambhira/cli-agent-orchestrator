@@ -4775,6 +4775,21 @@ async def terminal_ws(websocket: WebSocket, terminal_id: str):
                         os.kill(proc.pid, signal.SIGWINCH)
                     except OSError:
                         pass
+                elif payload.get("type") == "scroll":
+                    direction = payload.get("direction")
+                    if direction not in {"up", "down"}:
+                        continue
+                    try:
+                        lines = max(1, min(100, int(payload.get("lines", 3))))
+                    except (TypeError, ValueError):
+                        lines = 3
+                    await asyncio.to_thread(
+                        get_backend().scroll_view,
+                        session_name,
+                        window_name,
+                        direction,
+                        lines,
+                    )
         except WebSocketDisconnect:
             pass
         except (Exception, asyncio.CancelledError):
