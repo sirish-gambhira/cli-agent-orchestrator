@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Check, Copy, CopyPlus, X, Terminal as TermIcon } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Copy, CopyPlus, X, Terminal as TermIcon } from 'lucide-react'
 import { api, Terminal as TerminalRecord } from '../api'
 
 interface TerminalViewProps {
@@ -107,6 +107,13 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
     void copyTerminalSelection(term, selection).then(showCopyResult)
   }, [showCopyResult])
 
+  const scrollTerminal = useCallback((pages: number) => {
+    const term = terminalRef.current
+    if (!term) return
+    term.scrollPages(pages)
+    term.focus()
+  }, [])
+
   const replicateCurrentSession = useCallback(async () => {
     if (replicatingRef.current || replicateStatus === 'created') return
     if (!provider || !agentProfile) {
@@ -171,6 +178,9 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
       fontSize: 14,
       fontFamily: 'JetBrains Mono, Menlo, Monaco, Consolas, monospace',
       scrollback: 10000,
+      scrollSensitivity: 2,
+      fastScrollSensitivity: 5,
+      scrollOnUserInput: true,
       macOptionClickForcesSelection: true,
       theme: {
         background: '#0d1117',
@@ -185,6 +195,9 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
         magenta: '#bc8cff',
         cyan: '#39d353',
         white: '#c9d1d9',
+        scrollbarSliderBackground: '#4b5563aa',
+        scrollbarSliderHoverBackground: '#6b7280dd',
+        scrollbarSliderActiveBackground: '#60a5faff',
       },
     })
 
@@ -330,6 +343,22 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
           )}
           <button
             onMouseDown={e => e.preventDefault()}
+            onClick={() => scrollTerminal(-1)}
+            className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+            title="Scroll terminal up one page"
+          >
+            <ChevronUp size={13} />
+          </button>
+          <button
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => scrollTerminal(1)}
+            className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+            title="Scroll terminal down one page"
+          >
+            <ChevronDown size={13} />
+          </button>
+          <button
+            onMouseDown={e => e.preventDefault()}
             onClick={copyCurrentSelection}
             disabled={!hasSelection}
             className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-25 rounded transition-colors"
@@ -358,7 +387,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
       </div>
       {/* Terminal — absolute positioning gives xterm.js real pixel dimensions to measure */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <div ref={containerRef} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+        <div ref={containerRef} className="terminal-scrollback" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
       </div>
     </div>
   )
