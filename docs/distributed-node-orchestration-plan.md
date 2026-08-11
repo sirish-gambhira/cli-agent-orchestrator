@@ -559,6 +559,45 @@ These are deliberately deferred until the MVP proves useful:
 - live task migration between nodes;
 - fleet-wide shared memory and analytics.
 
+### Markdown-driven multi-provider goal workflows
+
+Add a laptop-controlled workflow runner that accepts a Markdown goal file and
+coordinates a bounded sequence of agents across explicit nodes and providers.
+For example, a Claude planner can produce a structured plan, a Codex worker can
+implement it in an isolated worktree, and a second Claude worker can review the
+result. Review findings loop back to the implementer until the acceptance
+criteria pass or the run reaches a configured limit.
+
+This remains controller-driven: remote agents do not SSH-route other agents or
+select nodes themselves. The goal document declares the repository, explicit
+node/provider/profile/model assignments, acceptance criteria, constraints,
+timeouts, and maximum iterations. The laptop controller owns the durable run
+state machine and creates a separate node-local CAO session for each agent step.
+
+Required future components:
+
+- a Markdown goal parser with optional structured front matter;
+- durable `workflow_runs`, `workflow_steps`, artifacts, events, approvals, and
+  user-input state that survive controller restarts;
+- explicit state transitions such as `SUBMITTED -> PLANNING -> IMPLEMENTING ->
+  REVIEWING -> COMPLETE`, with `REVISION_REQUIRED` looping back to implementation;
+- structured agent tools such as `report_plan`, `report_result`,
+  `request_revision`, `approve_result`, and `request_user_input` rather than
+  interpreting terminal prose as workflow control;
+- Git commits/worktrees for code handoff and JSON records for plans, findings,
+  test evidence, and step results;
+- per-step node, provider, profile, model, directory, timeout, and worktree
+  selection, with no automatic node scheduler required;
+- bounded execution through iteration, time, token/cost, cancellation, and
+  independent-verifier gates; exhausted runs become `BLOCKED` and notify the
+  operator instead of looping indefinitely;
+- a fleet UI showing the run graph, current step, artifacts, review cycles,
+  waiting-user-input notifications, cancellation, and resume/recovery status.
+
+The initial reference workflow is `Claude planner -> Codex implementer ->
+Claude reviewer`, repeating the implement/review pair until the goal is approved
+or the configured limits are exhausted.
+
 ## 15. Remaining MVP Decisions
 
 - [ ] Where should laptop fleet metadata be stored under CAO's home directory?
