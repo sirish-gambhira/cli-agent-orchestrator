@@ -5,7 +5,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { FALLBACK_PROVIDERS } from '../components/AgentPanel'
 import { mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet } from '../components/DashboardHome'
-import { isMouseTrackingModeSequence } from '../components/TerminalView'
+import { isMouseTrackingModeSequence, isReplicateShortcut } from '../components/TerminalView'
 
 describe('terminal text selection', () => {
   it('blocks provider mouse-tracking modes that disable xterm selection', () => {
@@ -16,6 +16,17 @@ describe('terminal text selection', () => {
   it('does not consume unrelated or mixed private terminal modes', () => {
     expect(isMouseTrackingModeSequence([25])).toBe(false)
     expect(isMouseTrackingModeSequence([25, 1000])).toBe(false)
+  })
+})
+
+describe('terminal shortcuts', () => {
+  it('recognizes Command-D by physical code and printable key', () => {
+    expect(isReplicateShortcut({ metaKey: true, ctrlKey: false, key: 'd', code: 'KeyD' })).toBe(true)
+    expect(isReplicateShortcut({ metaKey: true, ctrlKey: false, key: '∂', code: 'KeyD' })).toBe(true)
+  })
+
+  it('does not replace Control-D terminal input', () => {
+    expect(isReplicateShortcut({ metaKey: false, ctrlKey: true, key: 'd', code: 'KeyD' })).toBe(false)
   })
 })
 

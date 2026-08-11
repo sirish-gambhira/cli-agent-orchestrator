@@ -27,6 +27,10 @@ export function isMouseTrackingModeSequence(params: (number | number[])[]): bool
   return params.length > 0 && params.every(param => typeof param === 'number' && MOUSE_TRACKING_MODES.has(param))
 }
 
+export function isReplicateShortcut(event: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'key' | 'code'>): boolean {
+  return event.metaKey && !event.ctrlKey && (event.code === 'KeyD' || event.key.toLowerCase() === 'd')
+}
+
 async function copyTerminalText(text: string): Promise<boolean> {
   if (!text) return false
   try {
@@ -134,13 +138,17 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
   useEffect(() => {
     if (!replicationEnabled) return
     const handleReplicateShortcut = (event: KeyboardEvent) => {
-      if (!event.metaKey || event.ctrlKey || event.key.toLowerCase() !== 'd') return
+      if (!isReplicateShortcut(event)) return
       event.preventDefault()
-      event.stopPropagation()
-      replicateHandlerRef.current()
+      event.stopImmediatePropagation()
+      if (event.type === 'keydown' && !event.repeat) replicateHandlerRef.current()
     }
-    window.addEventListener('keydown', handleReplicateShortcut, true)
-    return () => window.removeEventListener('keydown', handleReplicateShortcut, true)
+    window.addEventListener('keydown', handleReplicateShortcut, { capture: true })
+    window.addEventListener('keyup', handleReplicateShortcut, { capture: true })
+    return () => {
+      window.removeEventListener('keydown', handleReplicateShortcut, { capture: true })
+      window.removeEventListener('keyup', handleReplicateShortcut, { capture: true })
+    }
   }, [replicationEnabled])
 
   useEffect(() => {
