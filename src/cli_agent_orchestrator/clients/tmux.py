@@ -1047,9 +1047,10 @@ class TmuxClient:
         """Scroll a pane using tmux copy-mode or TUI navigation.
 
         Normal-screen history is owned by tmux, not the browser-side xterm
-        attached later. Alternate-screen TUIs own their own viewport, so route
-        wheel movement as Up/Down keys in that case, following tmux's official
-        mouse-wheel recipe.
+        attached later. Alternate-screen TUIs own their own viewport. Route
+        wheel movement as PageUp/PageDown in that case: interactive CLIs such
+        as Claude reserve Up/Down for prompt history/navigation and explicitly
+        require paging keys for transcript scrolling.
         """
         if direction not in {"up", "down"}:
             return False
@@ -1073,7 +1074,7 @@ class TmuxClient:
             if in_mode:
                 pane.cmd("send-keys", "-X", "-N", str(lines), f"scroll-{direction}")
             elif alternate_on:
-                pane.cmd("send-keys", "-N", str(max(1, lines // 3)), direction.title())
+                pane.cmd("send-keys", "PPage" if direction == "up" else "NPage")
             elif direction == "up":
                 pane.cmd("copy-mode", "-e")
                 pane.cmd("send-keys", "-X", "-N", str(lines), "scroll-up")

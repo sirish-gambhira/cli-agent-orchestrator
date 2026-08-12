@@ -770,11 +770,12 @@ class TestScrollView:
         assert tmux.scroll_view("ses", "win", "down", 4) is True
         pane.cmd.assert_called_with("send-keys", "-X", "-N", "4", "scroll-down")
 
-    def test_routes_alternate_screen_scroll_to_tui(self, tmux):
+    @pytest.mark.parametrize(("direction", "key"), [("up", "PPage"), ("down", "NPage")])
+    def test_routes_alternate_screen_scroll_to_tui_as_page_keys(self, tmux, direction, key):
         pane = self._pane(tmux, "0 1")
 
-        assert tmux.scroll_view("ses", "win", "up", 9) is True
-        pane.cmd.assert_called_with("send-keys", "-N", "3", "Up")
+        assert tmux.scroll_view("ses", "win", direction, 9) is True
+        pane.cmd.assert_called_with("send-keys", key)
 
 class TestPaneIsBracketedPasteIncompatible:
     @pytest.mark.parametrize(
