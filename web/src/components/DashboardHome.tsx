@@ -1,14 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useStore } from '../store'
 import { api, FleetCachedNode, FleetNodeOverview, TerminalMeta } from '../api'
-import { Bot, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, Filter, ArrowDownUp, FolderOpen } from 'lucide-react'
+import { Bot, Package, Monitor, Terminal as TermIcon, Trash2, Mail, FileText, LogOut, Send, ArrowDownUp, FolderOpen } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
 import { InboxPanel } from './InboxPanel'
-import { StatusBadge, STATUS_CONFIG } from './StatusBadge'
+import { StatusBadge } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
-
-const STATUS_ORDER = ['PROCESSING', 'IDLE', 'WAITING_USER_ANSWER', 'ERROR', 'COMPLETED', 'UNKNOWN']
+import { CustomSelect } from './CustomSelect'
 
 function fmtRel(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null
@@ -31,20 +30,6 @@ function fmtAbs(dateStr: string | null | undefined): string | null {
   const d = new Date(dateStr)
   if (isNaN(d.getTime())) return null
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
-const STATUS_META: Record<string, { label: string; dot: string; text: string; pulse?: boolean }> = Object.fromEntries(
-  Object.entries(STATUS_CONFIG).map(([k, v]) => [k, { label: v.label, dot: v.dotClass, text: v.textClass, pulse: v.pulse }])
-)
-STATUS_META['UNKNOWN'] = { label: 'Unknown', dot: 'bg-gray-500', text: 'text-gray-500' }
-
-const STATUS_ACTIVE_BG: Record<string, string> = {
-  PROCESSING: 'bg-blue-900/40 border-blue-500/50 text-blue-300',
-  IDLE: 'bg-emerald-900/40 border-emerald-500/50 text-emerald-300',
-  WAITING_USER_ANSWER: 'bg-amber-900/40 border-amber-500/50 text-amber-300',
-  ERROR: 'bg-red-900/40 border-red-500/50 text-red-300',
-  COMPLETED: 'bg-purple-900/40 border-purple-500/50 text-purple-300',
-  UNKNOWN: 'bg-gray-800/40 border-gray-500/50 text-gray-300',
 }
 
 interface SessionWithTerminals {
@@ -135,8 +120,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const [sendInputOpen, setSendInputOpen] = useState<Record<string, boolean>>({})
   const [sendInputValues, setSendInputValues] = useState<Record<string, string>>({})
   const [sendingInput, setSendingInput] = useState<string | null>(null)
-  const [agentTypeFilter, setAgentTypeFilter] = useState<string | null>(null)
-  const [statusFilter, setStatusFilter] = useState<string | null>(null)
+  const [executionNodeFilter, setExecutionNodeFilter] = useState('all')
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
   const [pendingDeleteSession, setPendingDeleteSession] = useState<{ name: string; node: string | null } | null>(null)
   const [deletingSession, setDeletingSession] = useState(false)
@@ -148,29 +132,27 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
 
   const nonEmptySessionCount = sessionData.filter(session => session.terminals.length > 0).length
 
-  const allAgentTypes = useMemo(() => {
-    const types = new Set<string>()
-    sessionData.forEach(session => {
-      const agent = session.terminals[0]
-      if (agent) types.add(agent.agent_profile || 'default')
+  const executionNodes = useMemo(() => {
+    const nodes = new Set(sessionData.map(session => session.node || 'local'))
+    return [...nodes].sort((a, b) => {
+      if (a === 'local') return -1
+      if (b === 'local') return 1
+      return a.localeCompare(b)
     })
-    return [...types].sort()
   }, [sessionData])
 
   const filteredSessions = useMemo(() => {
     const filtered = sessionData.filter(session => {
       const agent = session.terminals[0]
       if (!agent) return false
-      const matchAgent = !agentTypeFilter || (agent.agent_profile || 'default') === agentTypeFilter
-      const matchStatus = !statusFilter || (terminalStatuses[locationKey(session.node, agent.id)] || agent.status?.toUpperCase() || 'UNKNOWN') === statusFilter
-      return matchAgent && matchStatus
+      return executionNodeFilter === 'all' || (session.node || 'local') === executionNodeFilter
     })
     return filtered.sort((a, b) => {
       const latestA = a.terminals[0]?.last_active ? new Date(a.terminals[0].last_active!).getTime() : 0
       const latestB = b.terminals[0]?.last_active ? new Date(b.terminals[0].last_active!).getTime() : 0
       return sortOrder === 'desc' ? latestB - latestA : latestA - latestB
     })
-  }, [sessionData, agentTypeFilter, statusFilter, sortOrder, terminalStatuses])
+  }, [sessionData, executionNodeFilter, sortOrder])
 
   // Fetch laptop-local sessions and all reachable SSH nodes into one dashboard.
   useEffect(() => {
@@ -387,30 +369,20 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
         </div>
       </div>
 
-      {/* Agent type filter */}
-      {allAgentTypes.length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap">
-          <Filter size={12} className="text-gray-500" />
-          <button onClick={() => setAgentTypeFilter(null)} className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${!agentTypeFilter ? 'bg-emerald-900/40 border-emerald-500/50 text-emerald-300' : 'border-gray-700 text-gray-400 hover:text-gray-200'}`}>All</button>
-          {allAgentTypes.map(t => (
-            <button key={t} onClick={() => setAgentTypeFilter(agentTypeFilter === t ? null : t)} className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${agentTypeFilter === t ? 'bg-emerald-900/40 border-emerald-500/50 text-emerald-300' : 'border-gray-700 text-gray-400 hover:text-gray-200'}`}>{t}</button>
-          ))}
-        </div>
-      )}
-
-      {/* Status filter */}
-      <div className="flex items-center gap-2 flex-wrap -mt-3">
-        <Filter size={12} className="text-gray-500" />
-        <button onClick={() => setStatusFilter(null)} className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${!statusFilter ? 'bg-gray-700 border-gray-500/50 text-gray-200' : 'border-gray-700 text-gray-400 hover:text-gray-200'}`}>Any status</button>
-        {STATUS_ORDER.map(s => {
-          const meta = STATUS_META[s]
-          return (
-            <button key={s} onClick={() => setStatusFilter(statusFilter === s ? null : s)} className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${statusFilter === s ? STATUS_ACTIVE_BG[s] : 'border-gray-700 text-gray-400 hover:text-gray-200'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
-              {meta.label}
-            </button>
-          )
-        })}
+      {/* The dashboard intentionally has one filter: where the session runs. */}
+      <div className="w-full sm:w-72">
+        <label className="block text-xs text-gray-500 mb-1">Execution Node</label>
+        <CustomSelect
+          value={executionNodeFilter}
+          onChange={setExecutionNodeFilter}
+          options={[
+            { value: 'all', label: 'All nodes' },
+            ...executionNodes.map(node => ({
+              value: node,
+              label: node === 'local' ? 'This laptop' : node,
+            })),
+          ]}
+        />
       </div>
 
       {/* Agent session cards */}
