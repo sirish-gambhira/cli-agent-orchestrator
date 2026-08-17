@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
@@ -26,6 +28,19 @@ HEARTBEAT_INTERVAL_SECONDS = 10.0
 STALE_AFTER_SECONDS = 30.0
 OFFLINE_AFTER_SECONDS = 120.0
 DEFAULT_CACHE_PATH = Path(CAO_HOME_DIR) / "fleet-state.json"
+# Stream updates coalesce into one disk write per interval. With N monitored
+# nodes each snapshotting every SNAPSHOT_INTERVAL_SECONDS, per-update writes
+# scale as N/2 per second and serialize behind the cache lock — at fleet scale
+# that stalls every thread touching the cache (observed as wedged /fleet
+# requests with 33 nodes). Crash-loss window is this interval; tombstones
+# bypass it (see mark_session_deleted).
+CACHE_FLUSH_INTERVAL_SECONDS = 5.0
+# Blocking tunnel operations run on their own bounded pool. They must never
+# share asyncio.to_thread's default executor with request handlers: one slow
+# node per worker would starve every proxied /fleet request behind tunnel
+# timeouts. Cache mutations stay synchronous because they only update memory
+# and schedule the debounced writer.
+MONITOR_POOL_WORKERS = 8
 
 
 def utc_now() -> str:
@@ -50,11 +65,18 @@ def build_local_snapshot() -> list[dict[str, Any]]:
 class FleetStateCache:
     """Thread-safe last-known node snapshots with atomic disk persistence."""
 
-    def __init__(self, path: Path = DEFAULT_CACHE_PATH) -> None:
+    def __init__(
+        self,
+        path: Path = DEFAULT_CACHE_PATH,
+        flush_interval: float = CACHE_FLUSH_INTERVAL_SECONDS,
+    ) -> None:
         self.path = path
         self._lock = threading.RLock()
         self._nodes: dict[str, dict[str, Any]] = {}
         self._deleted_sessions: dict[str, set[str]] = {}
+        self._dirty = False
+        self._flush_timer: threading.Timer | None = None
+        self._flush_interval = flush_interval
         self._load()
 
     def _load(self) -> None:
@@ -73,7 +95,14 @@ class FleetStateCache:
             self._nodes = {}
             self._deleted_sessions = {}
 
-    def _save(self) -> None:
+    def _write(self) -> None:
+        """Atomically replace the cache file. Caller must hold ``self._lock``.
+
+        No fsync: the atomic rename already prevents torn reads, and this is
+        reconstructable last-known state — after a crash the monitor streams
+        repopulate it within one snapshot interval, so the durability an fsync
+        would buy is worth less than the per-write stall it costs.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, raw_path = tempfile.mkstemp(prefix="fleet-state-", suffix=".json", dir=self.path.parent)
         try:
@@ -91,14 +120,37 @@ class FleetStateCache:
                     handle,
                     separators=(",", ":"),
                 )
-                handle.flush()
-                os.fsync(handle.fileno())
             os.replace(raw_path, self.path)
         finally:
             try:
                 os.unlink(raw_path)
             except FileNotFoundError:
                 pass
+        self._dirty = False
+
+    def _mark_dirty(self) -> None:
+        """Record a pending change and arm the debounced flush. Caller must hold ``self._lock``."""
+        self._dirty = True
+        if self._flush_timer is None:
+            timer = threading.Timer(self._flush_interval, self._flush_due)
+            timer.daemon = True
+            self._flush_timer = timer
+            timer.start()
+
+    def _flush_due(self) -> None:
+        try:
+            self.flush()
+        except OSError:
+            logger.warning("Deferred fleet-state flush to %s failed", self.path, exc_info=True)
+
+    def flush(self) -> None:
+        """Persist pending changes immediately (timer expiry and shutdown path)."""
+        with self._lock:
+            if self._flush_timer is not None:
+                self._flush_timer.cancel()
+                self._flush_timer = None
+            if self._dirty:
+                self._write()
 
     def update(self, node: str, connection_id: str, sequence: int, sessions: list[dict[str, Any]]) -> None:
         with self._lock:
@@ -133,7 +185,7 @@ class FleetStateCache:
                 "last_seen": utc_now(),
                 "detail": None,
             }
-            self._save()
+            self._mark_dirty()
 
     def mark_session_deleted(self, node: str, session_name: str) -> None:
         """Apply a successful remote delete to the cache synchronously.
@@ -151,7 +203,9 @@ class FleetStateCache:
                 for session in current.get("sessions", [])
                 if str(session.get("id") or session.get("name")) != session_name
             ]
-            self._save()
+            # Tombstones are the read-after-write guarantee this docstring
+            # promises across restarts, so they skip the debounce window.
+            self._write()
 
     def clear_session_tombstone(self, node: str, session_name: str) -> None:
         """Allow an explicitly recreated session name to appear again."""
@@ -162,7 +216,7 @@ class FleetStateCache:
             deleted.discard(session_name)
             if not deleted:
                 self._deleted_sessions.pop(node, None)
-            self._save()
+            self._write()
 
     def heartbeat(self, node: str, connection_id: str, sequence: int) -> None:
         with self._lock:
@@ -170,13 +224,13 @@ class FleetStateCache:
             if current.get("connection_id") == connection_id and sequence <= int(current.get("sequence", -1)):
                 return
             current.update(connection_id=connection_id, sequence=sequence, last_seen=utc_now(), detail=None)
-            self._save()
+            self._mark_dirty()
 
     def failure(self, node: str, detail: str) -> None:
         with self._lock:
             current = self._nodes.setdefault(node, {"name": node, "sessions": [], "sequence": 0})
             current["detail"] = detail[:300]
-            self._save()
+            self._mark_dirty()
 
     def view(self, nodes: Sequence[str] | None = None) -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc)
@@ -203,6 +257,22 @@ class FleetStateMonitor:
         self.service = service
         self.cache = cache or FleetStateCache()
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._executor: ThreadPoolExecutor | None = None
+
+    def _run_tunnel_op(self, fn: Callable[..., Any], *args: Any) -> Awaitable[Any]:
+        """Run a blocking tunnel operation on the monitor's bounded pool.
+
+        Deliberately not asyncio.to_thread: that shares one default executor
+        with the request handlers (/fleet proxy and overview), so monitor
+        tasks blocked on tunnel startup would starve every proxied request.
+        """
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=MONITOR_POOL_WORKERS, thread_name_prefix="fleet-monitor"
+            )
+        return asyncio.get_running_loop().run_in_executor(
+            self._executor, functools.partial(fn, *args)
+        )
 
     @staticmethod
     def configured_nodes() -> list[str]:
@@ -224,12 +294,16 @@ class FleetStateMonitor:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+        executor, self._executor = self._executor, None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+        await asyncio.to_thread(self.cache.flush)
 
     async def _monitor(self, node: str) -> None:
         delay = 1.0
         while True:
             try:
-                tunnel = await asyncio.to_thread(self.service.tunnels.ensure, node)
+                tunnel = await self._run_tunnel_op(self.service.tunnels.ensure, node)
                 url = f"ws://127.0.0.1:{tunnel.local_port}/fleet/state/ws"
                 async with websockets.connect(url, origin=None, ping_interval=15, ping_timeout=15) as remote:
                     delay = 1.0
@@ -245,14 +319,14 @@ class FleetStateMonitor:
                             sessions = message.get("sessions", [])
                             if not isinstance(sessions, list):
                                 raise ValueError("invalid fleet snapshot")
-                            await asyncio.to_thread(self.cache.update, node, connection_id, sequence, sessions)
+                            self.cache.update(node, connection_id, sequence, sessions)
                         elif message.get("type") == "heartbeat":
-                            await asyncio.to_thread(self.cache.heartbeat, node, connection_id, sequence)
+                            self.cache.heartbeat(node, connection_id, sequence)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.service.tunnels.drop(node)
-                await asyncio.to_thread(self.cache.failure, node, f"{type(exc).__name__}: {exc}")
+                await self._run_tunnel_op(self.service.tunnels.drop, node)
+                self.cache.failure(node, f"{type(exc).__name__}: {exc}")
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
 

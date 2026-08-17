@@ -1,4 +1,15 @@
-from cli_agent_orchestrator.services.fleet_state_service import FleetStateCache
+import asyncio
+import threading
+import time
+from unittest.mock import Mock
+
+import pytest
+
+from cli_agent_orchestrator.services.fleet_state_service import (
+    MONITOR_POOL_WORKERS,
+    FleetStateCache,
+    FleetStateMonitor,
+)
 
 
 def test_cache_persists_snapshot_and_survives_failure(tmp_path):
@@ -8,11 +19,74 @@ def test_cache_persists_snapshot_and_survives_failure(tmp_path):
 
     cache.update("secure-02", "stream-a", 1, sessions)
     cache.failure("secure-02", "temporary disconnect")
+    cache.flush()
 
     restored = FleetStateCache(path).view(["secure-02"])[0]
     assert restored["sessions"] == sessions
     assert restored["detail"] == "temporary disconnect"
     assert restored["status"] == "live"
+
+
+def test_stream_updates_debounce_disk_writes(tmp_path):
+    path = tmp_path / "fleet-state.json"
+    cache = FleetStateCache(path)
+
+    cache.update("secure-02", "stream-a", 1, [{"id": "cao-one"}])
+    assert not path.exists()
+
+    cache.flush()
+    assert FleetStateCache(path).view(["secure-02"])[0]["sessions"] == [{"id": "cao-one"}]
+
+
+def test_stream_updates_flush_after_debounce_interval(tmp_path):
+    path = tmp_path / "fleet-state.json"
+    cache = FleetStateCache(path, flush_interval=0.01)
+
+    cache.update("secure-02", "stream-a", 1, [{"id": "cao-one"}])
+
+    deadline = time.monotonic() + 1.0
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert FleetStateCache(path).view(["secure-02"])[0]["sessions"] == [{"id": "cao-one"}]
+
+
+@pytest.mark.asyncio
+async def test_monitor_uses_dedicated_executor(tmp_path):
+    cache = FleetStateCache(tmp_path / "fleet-state.json")
+    monitor = FleetStateMonitor(service=Mock(), cache=cache)
+
+    try:
+        thread_name = await monitor._run_tunnel_op(lambda: threading.current_thread().name)
+    finally:
+        await monitor.stop()
+
+    assert thread_name.startswith("fleet-monitor")
+
+
+@pytest.mark.asyncio
+async def test_blocked_tunnel_pool_does_not_starve_default_executor(tmp_path):
+    cache = FleetStateCache(tmp_path / "fleet-state.json")
+    monitor = FleetStateMonitor(service=Mock(), cache=cache)
+    release = threading.Event()
+    all_started = threading.Barrier(MONITOR_POOL_WORKERS + 1)
+
+    def block_tunnel_worker() -> None:
+        all_started.wait()
+        release.wait()
+
+    blocked = [
+        asyncio.ensure_future(monitor._run_tunnel_op(block_tunnel_worker))
+        for _ in range(MONITOR_POOL_WORKERS)
+    ]
+    try:
+        await asyncio.wait_for(asyncio.to_thread(all_started.wait), timeout=1.0)
+        result = await asyncio.wait_for(asyncio.to_thread(lambda: "available"), timeout=1.0)
+    finally:
+        release.set()
+        await asyncio.gather(*blocked)
+        await monitor.stop()
+
+    assert result == "available"
 
 
 def test_cache_rejects_duplicate_sequence_within_one_connection(tmp_path):
