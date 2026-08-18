@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { Check, ChevronDown, ChevronUp, Copy, CopyPlus, X, Terminal as TermIcon } from 'lucide-react'
-import { api, ProviderInfo, Terminal as TerminalRecord } from '../api'
+import { api, FleetTerminalAttachment, ProviderInfo, Terminal as TerminalRecord } from '../api'
 
 interface TerminalViewProps {
   terminalId: string
@@ -109,6 +109,77 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
   const [replicaTerminal, setReplicaTerminal] = useState<TerminalRecord | null>(null)
   const [activePane, setActivePane] = useState<'primary' | 'replica'>('primary')
   const [splitPercent, setSplitPercent] = useState(50)
+  const terminalTransport: 'local' | 'ttyd' = node ? 'ttyd' : 'local'
+  const [gatewayState, setGatewayState] = useState<'connecting' | 'live' | 'retrying' | 'failed' | 'closed'>('connecting')
+  const [gatewayDetail, setGatewayDetail] = useState('')
+  const [attachment, setAttachment] = useState<FleetTerminalAttachment | null>(null)
+  const [fallbackOutput, setFallbackOutput] = useState('')
+  const [gatewayAttempt, setGatewayAttempt] = useState(0)
+
+  useEffect(() => {
+    if (!node) return
+    let stopped = false
+    let attachmentId: string | null = null
+    let heartbeat: ReturnType<typeof setInterval> | undefined
+    const timeout = setTimeout(() => {
+      if (!stopped && gatewayState !== 'live') {
+        setGatewayState('failed')
+        setGatewayDetail('Terminal gateway did not become ready within 12 seconds')
+      }
+    }, 12000)
+
+    setGatewayState(gatewayAttempt ? 'retrying' : 'connecting')
+    setGatewayDetail('')
+    setFallbackOutput('')
+    setAttachment(null)
+
+    api.createFleetTerminalAttachment(node, terminalId)
+      .then(created => {
+        if (stopped) {
+          void api.deleteFleetTerminalAttachment(created.id).catch(() => {})
+          return
+        }
+        attachmentId = created.id
+        setAttachment(created)
+        setGatewayState(created.state === 'live' ? 'live' : 'connecting')
+        if (created.state === 'live') clearTimeout(timeout)
+        heartbeat = setInterval(() => {
+          if (!attachmentId) return
+          api.getFleetTerminalAttachment(attachmentId)
+            .then(current => {
+              if (!stopped) {
+                setAttachment(current)
+                setGatewayState(current.state === 'live' ? 'live' : 'failed')
+                if (current.detail) setGatewayDetail(current.detail)
+              }
+            })
+            .catch(error => {
+              if (!stopped) {
+                setGatewayState('failed')
+                setGatewayDetail(error instanceof Error ? error.message : 'Terminal gateway disconnected')
+              }
+            })
+        }, 30000)
+      })
+      .catch(error => {
+        if (stopped) return
+        setGatewayState('failed')
+        const detail = error && typeof error === 'object' && 'detail' in error
+          ? String((error as { detail?: string }).detail || '')
+          : ''
+        setGatewayDetail(detail || (error instanceof Error ? error.message : 'Could not open terminal gateway'))
+        api.getTerminalOutput(terminalId, 'full', node)
+          .then(result => { if (!stopped) setFallbackOutput(result.output) })
+          .catch(() => {})
+      })
+
+    return () => {
+      stopped = true
+      clearTimeout(timeout)
+      if (heartbeat) clearInterval(heartbeat)
+      if (attachmentId) void api.deleteFleetTerminalAttachment(attachmentId).catch(() => {})
+    }
+  }, [node, terminalId, gatewayAttempt])
 
   const showCopyResult = useCallback((copied: boolean) => {
     setCopyStatus(copied ? 'copied' : 'failed')
@@ -208,6 +279,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
   }, [embedded])
 
   useEffect(() => {
+    if (terminalTransport !== 'local') return
     const el = containerRef.current
     if (!el) return
 
@@ -255,9 +327,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
 
     // Connect WebSocket
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const path = node
-      ? `/fleet/nodes/${encodeURIComponent(node)}/terminals/${terminalId}/ws`
-      : `/terminals/${terminalId}/ws`
+    const path = `/terminals/${terminalId}/ws`
     const ws = new WebSocket(`${protocol}//${location.host}${path}`)
     ws.binaryType = 'arraybuffer'
 
@@ -378,7 +448,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
       ws.close()
       term.dispose()
     }
-  }, [terminalId, node, showCopyResult])
+  }, [terminalId, showCopyResult, terminalTransport])
 
   useEffect(() => () => clearTimeout(copyFeedbackTimerRef.current), [])
 
@@ -405,6 +475,11 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
           <span className="text-xs font-mono text-gray-200 truncate">{sessionName}</span>
           {node && <span className="text-[10px] text-blue-300 truncate max-w-24">{node}</span>}
           {agentProfile && <span className="text-[10px] text-emerald-400 truncate max-w-20">{agentProfile}</span>}
+          {node && (
+            <span className={`text-[10px] ${gatewayState === 'live' ? 'text-emerald-400' : gatewayState === 'failed' ? 'text-red-400' : 'text-amber-300'}`}>
+              {gatewayState}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1 shrink-0 ml-2">
           {copyStatus !== 'idle' && (
@@ -417,31 +492,45 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
               {replicateMessage}
             </span>
           )}
-          <button
-            onMouseDown={e => e.preventDefault()}
-            onClick={() => scrollTerminal(-1)}
-            className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-            title="Scroll terminal up one page"
-          >
-            <ChevronUp size={13} />
-          </button>
-          <button
-            onMouseDown={e => e.preventDefault()}
-            onClick={() => scrollTerminal(1)}
-            className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-            title="Scroll terminal down one page"
-          >
-            <ChevronDown size={13} />
-          </button>
-          <button
-            onMouseDown={e => e.preventDefault()}
-            onClick={copyCurrentSelection}
-            disabled={!hasSelection}
-            className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-25 rounded transition-colors"
-            title="Copy selected terminal text"
-          >
-            {copyStatus === 'copied' ? <Check size={13} /> : <Copy size={13} />}
-          </button>
+          {terminalTransport === 'local' && (
+            <>
+              <button
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => scrollTerminal(-1)}
+                className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                title="Scroll terminal up one page"
+              >
+                <ChevronUp size={13} />
+              </button>
+              <button
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => scrollTerminal(1)}
+                className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                title="Scroll terminal down one page"
+              >
+                <ChevronDown size={13} />
+              </button>
+              <button
+                onMouseDown={e => e.preventDefault()}
+                onClick={copyCurrentSelection}
+                disabled={!hasSelection}
+                className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-25 rounded transition-colors"
+                title="Copy selected terminal text"
+              >
+                {copyStatus === 'copied' ? <Check size={13} /> : <Copy size={13} />}
+              </button>
+            </>
+          )}
+          {attachment && gatewayState === 'live' && (
+            <a
+              href={attachment.view_url}
+              target="_blank"
+              rel="noreferrer"
+              className="px-2 py-1 text-[10px] text-blue-300 hover:text-white hover:bg-gray-700 rounded"
+            >
+              Open
+            </a>
+          )}
           {replicationEnabled && (
             <button
               onClick={() => replicateHandlerRef.current()}
@@ -463,7 +552,37 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
       </div>
       {/* Terminal — absolute positioning gives xterm.js real pixel dimensions to measure */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <div ref={containerRef} className="terminal-scrollback" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+        {terminalTransport === 'local' ? (
+          <div ref={containerRef} className="terminal-scrollback" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+        ) : attachment && gatewayState === 'live' ? (
+          <iframe
+            title={`${sessionName} terminal`}
+            src={attachment.view_url}
+            className="absolute inset-0 w-full h-full border-0 bg-[#0d1117]"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            onLoad={() => setGatewayState('live')}
+          />
+        ) : gatewayState === 'failed' ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
+            <div className="text-red-300 font-medium">Terminal connection failed</div>
+            <div className="text-sm text-gray-400 max-w-2xl">{gatewayDetail || 'The terminal gateway is unavailable.'}</div>
+            <button
+              onClick={() => setGatewayAttempt(attempt => attempt + 1)}
+              className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-sm text-white"
+            >
+              Retry
+            </button>
+            {fallbackOutput && (
+              <pre className="mt-2 w-full max-h-[60%] overflow-auto text-left text-xs text-gray-300 bg-black/30 border border-gray-700 rounded p-3 whitespace-pre-wrap">
+                {fallbackOutput}
+              </pre>
+            )}
+          </div>
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-400">
+            Connecting terminal gateway…
+          </div>
+        )}
       </div>
     </div>
   )

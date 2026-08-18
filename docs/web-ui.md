@@ -83,6 +83,28 @@ ssh -L 9889:localhost:9889 your-remote-host
 
 Then open the same URLs (localhost:5173 or localhost:9889) in your local browser.
 
+## SSH fleet dashboard
+
+The laptop fleet dashboard monitors an explicit SSH-host inventory and uses
+loopback-only tunnels to each node's `cao-server`:
+
+```bash
+# macOS; use your distribution package for ttyd on Linux
+brew install ttyd
+
+fleet --nodes 5c-01,jbom-03,secure-02
+# Opens http://127.0.0.1:9890
+```
+
+Run `cao-server` on loopback port 9889 on each selected node. Remote terminal
+views use a laptop-local ttyd process which attaches with SSH and tmux; CAO
+continues to handle profiles, launches, status, inboxes, and worktrees through
+the node API. Both ttyd and CAO remain bound to loopback.
+
+The configured `--nodes` list is authoritative. A controller already running on
+port 9890 rejects a different list instead of silently reusing stale
+configuration. Stop it before changing the inventory.
+
 ## Features
 
 Manage sessions, spawn agents, create scheduled flows, configure agent directories, and interact with live terminals — all from the browser. Includes live status badges, an inbox for agent-to-agent messaging, output viewer, and provider auto-detection.

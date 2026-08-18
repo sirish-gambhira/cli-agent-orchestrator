@@ -10,7 +10,9 @@ import pytest
 from cli_agent_orchestrator.services.fleet_service import (
     FleetProxyResponse,
     FleetService,
+    NodeNotReadyError,
     NodeTunnelManager,
+    NodeUnavailableError,
     RemoteBrowseError,
     UnknownNodeError,
     discover_ssh_aliases,
@@ -163,6 +165,127 @@ def test_concurrent_tunnel_callers_wait_for_startup(monkeypatch):
     manager.close()
 
 
+def test_get_live_fails_fast_before_connection_actor_starts():
+    manager = NodeTunnelManager()
+
+    with pytest.raises(NodeNotReadyError, match="stopped"):
+        manager.get_live("jbom-03")
+
+
+def test_tunnel_uses_keepalive_and_requires_forward_success(monkeypatch):
+    calls = []
+
+    class Process:
+        stderr = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout):
+            return 0
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.fleet_service.urllib.request.urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+    monkeypatch.setattr(NodeTunnelManager, "_reserve_port", staticmethod(lambda: 43210))
+
+    def popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return Process()
+
+    manager = NodeTunnelManager(popen=popen)
+    manager.ensure("jbom-03")
+
+    args = calls[0][0]
+    # ClearAllForwardings cannot be combined with this command's managed -L:
+    # OpenSSH clears command-line forwards too, leaving no listener to probe.
+    assert "ClearAllForwardings=yes" not in args
+    assert "ExitOnForwardFailure=yes" in args
+    assert "ServerAliveInterval=15" in args
+    assert "ServerAliveCountMax=3" in args
+    manager.close()
+
+
+def test_tunnel_recovers_from_backoff_on_next_actor_attempt(monkeypatch):
+    clock = [0.0]
+    available = [False]
+
+    class Process:
+        stderr = None
+
+        def __init__(self):
+            self.terminated = False
+
+        def poll(self):
+            return 0 if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.terminated = True
+
+        def wait(self, timeout):
+            return 0
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def urlopen(*_args, **_kwargs):
+        if not available[0]:
+            raise urllib.error.URLError("not ready")
+        return Response()
+
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.fleet_service.time.monotonic",
+        lambda: clock[0],
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.fleet_service.time.sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+    monkeypatch.setattr(
+        "cli_agent_orchestrator.services.fleet_service.urllib.request.urlopen",
+        urlopen,
+    )
+    ports = iter([43210, 43211])
+    monkeypatch.setattr(
+        NodeTunnelManager,
+        "_reserve_port",
+        staticmethod(lambda: next(ports)),
+    )
+    manager = NodeTunnelManager(popen=lambda *_args, **_kwargs: Process(), startup_timeout=0.2)
+
+    with pytest.raises(NodeUnavailableError, match="not ready"):
+        manager.ensure("jbom-03")
+    assert manager.connection_status("jbom-03").phase.value == "backoff"
+
+    available[0] = True
+    tunnel = manager.ensure("jbom-03")
+    assert tunnel.local_port == 43211
+    assert manager.connection_status("jbom-03").phase.value == "live"
+    manager.close()
+
+
 def test_unknown_node_never_invokes_ssh(tmp_path):
     config = tmp_path / "config"
     config.write_text("Host jbom-02\n")
@@ -243,7 +366,7 @@ def test_fleet_overview_combines_sessions_and_unavailable_nodes(tmp_path, monkey
 
     monkeypatch.setattr(service, "proxy_request", proxy)
 
-    overview = service.fleet_overview()
+    overview = service.fleet_overview(["jbom-02", "jbom-03"])
 
     assert overview[0].name == "jbom-02"
     assert overview[0].status == "reachable"

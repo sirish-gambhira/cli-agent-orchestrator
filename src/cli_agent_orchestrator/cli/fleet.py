@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -11,6 +12,7 @@ import webbrowser
 
 import click
 
+from cli_agent_orchestrator.services.fleet_inventory import parse_fleet_nodes
 
 DEFAULT_NODES = "jbom-03,secure-02"
 
@@ -18,9 +20,23 @@ DEFAULT_NODES = "jbom-03,secure-02"
 def _controller_is_healthy(url: str) -> bool:
     try:
         with urllib.request.urlopen(f"{url}/health", timeout=1.0) as response:
-            return response.status == 200
+            return int(response.status) == 200
     except (OSError, urllib.error.URLError):
         return False
+
+
+def _controller_nodes(url: str) -> list[str] | None:
+    """Return the running controller inventory, or None for an incompatible controller."""
+
+    try:
+        with urllib.request.urlopen(f"{url}/fleet/config", timeout=1.0) as response:
+            payload = json.load(response)
+        nodes = payload.get("nodes") if isinstance(payload, dict) else None
+        if not isinstance(nodes, list) or not all(isinstance(node, str) for node in nodes):
+            return None
+        return parse_fleet_nodes(",".join(nodes))
+    except (OSError, ValueError, TypeError, urllib.error.URLError):
+        return None
 
 
 def _open_dashboard(url: str) -> None:
@@ -40,13 +56,26 @@ def _open_dashboard(url: str) -> None:
 def main(nodes: str, host: str, port: int, open_browser: bool) -> None:
     """Start or open the remote agent fleet dashboard."""
 
-    normalized_nodes = ",".join(part.strip() for part in nodes.split(",") if part.strip())
-    if not normalized_nodes:
+    requested_nodes = parse_fleet_nodes(nodes)
+    if not requested_nodes:
         raise click.UsageError("At least one SSH node is required via --nodes")
+    normalized_nodes = ",".join(requested_nodes)
 
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     url = f"http://{browser_host}:{port}"
     if _controller_is_healthy(url):
+        running_nodes = _controller_nodes(url)
+        if running_nodes is None:
+            raise click.ClickException(
+                f"A controller is already running at {url}, but its fleet inventory "
+                "cannot be verified. Stop it before changing --nodes."
+            )
+        if running_nodes != requested_nodes:
+            raise click.ClickException(
+                f"A controller is already running at {url} for nodes "
+                f"{','.join(running_nodes) or '(none)'}; requested {normalized_nodes}. "
+                "Stop it before changing --nodes."
+            )
         click.echo(f"Fleet controller is already running: {url}")
         if open_browser:
             _open_dashboard(url)

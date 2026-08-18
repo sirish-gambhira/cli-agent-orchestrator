@@ -36,7 +36,7 @@ interface SessionWithTerminals {
   name: string
   status: string
   node: string | null
-  nodeStatus?: 'live' | 'stale' | 'offline'
+  nodeStatus?: 'live' | 'stale' | 'offline' | 'unmonitored'
   terminals: Array<TerminalMeta & { status?: string | null }>
 }
 
@@ -46,6 +46,8 @@ interface LocatedTerminal {
 }
 
 const locationKey = (node: string | null, id: string) => `${node || 'local'}:${id}`
+export const terminalHash = (node: string | null, session: string, terminalId: string) =>
+  `#terminal/${encodeURIComponent(node || 'local')}/${encodeURIComponent(session)}/${encodeURIComponent(terminalId)}`
 
 type SessionSource = 'local' | 'fleet'
 
@@ -109,7 +111,7 @@ export function sessionsFromCachedFleet(nodes: FleetCachedNode[]): SessionWithTe
 }
 
 export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => void }) {
-  const { terminalStatuses, setTerminalStatus, clearTerminalStatuses, showSnackbar } = useStore()
+  const { terminalStatuses, setTerminalStatus, clearTerminalStatuses, showSnackbar, fetchFleetState } = useStore()
   const [profileCount, setProfileCount] = useState(0)
   const [sessionData, setSessionData] = useState<SessionWithTerminals[]>([])
   const [liveTerminal, setLiveTerminal] = useState<{ id: string; sessionName: string; provider?: string; agentProfile?: string | null; node: string | null } | null>(null)
@@ -129,6 +131,17 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
   const deletedSessionsRef = useRef(new Map<string, SessionDeletionBarrier>())
   const localRequestSequenceRef = useRef(0)
   const fleetRequestSequenceRef = useRef(0)
+
+  const openLiveTerminal = (session: SessionWithTerminals, agent: TerminalMeta) => {
+    window.history.replaceState(null, '', terminalHash(session.node, session.name, agent.id))
+    setLiveTerminal({
+      id: agent.id,
+      sessionName: session.name,
+      provider: agent.provider,
+      agentProfile: agent.agent_profile,
+      node: session.node,
+    })
+  }
 
   const nonEmptySessionCount = sessionData.filter(session => session.terminals.length > 0).length
 
@@ -198,7 +211,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     const fetchFleet = async () => {
       const requestSequence = ++fleetRequestSequenceRef.current
       try {
-        fleetData = sessionsFromCachedFleet(await api.getFleetState())
+        fleetData = sessionsFromCachedFleet(await fetchFleetState())
         acknowledgeSessionDeletions(fleetData, deletedSessionsRef.current, 'fleet', requestSequence)
         publish()
       } catch {
@@ -215,7 +228,19 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
       clearTimeout(localTimer)
       clearTimeout(fleetTimer)
     }
-  }, [])
+  }, [fetchFleetState])
+
+  useEffect(() => {
+    if (liveTerminal || !window.location.hash.startsWith('#terminal/')) return
+    const [nodePart, sessionPart, terminalPart] = window.location.hash.slice('#terminal/'.length).split('/')
+    if (!nodePart || !sessionPart || !terminalPart) return
+    const node = decodeURIComponent(nodePart) === 'local' ? null : decodeURIComponent(nodePart)
+    const sessionName = decodeURIComponent(sessionPart)
+    const terminalId = decodeURIComponent(terminalPart)
+    const session = sessionData.find(item => item.node === node && item.name === sessionName)
+    const terminal = session?.terminals.find(item => item.id === terminalId)
+    if (session && terminal) openLiveTerminal(session, terminal)
+  }, [sessionData, liveTerminal])
 
   // Poll statuses
   useEffect(() => {
@@ -421,7 +446,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                   <div className="flex items-center gap-1 shrink-0">
                     <button onClick={() => setInboxTerminal({ id: agent.id, node: session.node })} className="p-1.5 text-gray-500 hover:text-white bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Inbox"><Mail size={13} /></button>
                     <button onClick={() => setOutputTerminal({ id: agent.id, node: session.node })} className="p-1.5 text-gray-500 hover:text-white bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Output"><FileText size={13} /></button>
-                    <button onClick={() => setLiveTerminal({ id: agent.id, sessionName: session.name, provider: agent.provider, agentProfile: agent.agent_profile, node: session.node })} className="flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-colors"><Monitor size={12} />Terminal</button>
+                    <button onClick={() => openLiveTerminal(session, agent)} className="flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded transition-colors"><Monitor size={12} />Terminal</button>
                     <button onClick={() => setPendingExit({ terminal: agent, node: session.node })} disabled={exitingTerminal === agent.id} className="p-1.5 text-gray-500 hover:text-amber-400 bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Graceful exit"><LogOut size={13} /></button>
                     <button onClick={() => setPendingDeleteSession({ name: session.name, node: session.node })} className="p-1.5 text-gray-500 hover:text-red-400 bg-gray-900/60 hover:bg-gray-700 rounded transition-colors" title="Delete agent session"><Trash2 size={13} /></button>
                   </div>
@@ -467,7 +492,12 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
           provider={liveTerminal.provider}
           agentProfile={liveTerminal.agentProfile}
           node={liveTerminal.node}
-          onClose={() => setLiveTerminal(null)}
+          onClose={() => {
+            setLiveTerminal(null)
+            if (window.location.hash.startsWith('#terminal/')) {
+              window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+            }
+          }}
         />
       )}
       {outputTerminal && <OutputViewer terminalId={outputTerminal.id} node={outputTerminal.node} onClose={() => setOutputTerminal(null)} />}

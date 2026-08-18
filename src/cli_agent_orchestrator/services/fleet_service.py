@@ -8,8 +8,10 @@ the controller into an arbitrary SSH target or inject SSH options.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import base64
+import functools
 import glob
 import json
 import logging
@@ -22,8 +24,9 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Sequence, cast
 
 from cli_agent_orchestrator.models.fleet import (
     FleetNode,
@@ -31,6 +34,7 @@ from cli_agent_orchestrator.models.fleet import (
     FleetNodeOverview,
     RemoteDirectoryListing,
 )
+from cli_agent_orchestrator.services.fleet_inventory import configured_fleet_nodes
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,8 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = 15
 DEFAULT_SSH_READY_TIMEOUT_SECONDS = 20
 MAX_DIRECTORY_ENTRIES = 500
 DEFAULT_REMOTE_CAO_PORT = 9889
+SSH_DIAGNOSTIC_LIMIT = 8192
+FLEET_REQUEST_WORKERS = 8
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -56,8 +62,34 @@ class NodeUnavailableError(FleetError):
     """Raised when an SSH command cannot reach or run on a node."""
 
 
+class NodeNotReadyError(NodeUnavailableError):
+    """Raised when a configured node has no established API tunnel yet."""
+
+    def __init__(self, node: str, state: str, detail: str | None = None) -> None:
+        self.node = node
+        self.state = state
+        self.detail = detail
+        message = f"Fleet node {node} is {state}"
+        if detail:
+            message = f"{message}: {detail}"
+        super().__init__(message)
+
+
 class RemoteBrowseError(FleetError):
     """Raised when the remote node rejects a directory browse request."""
+
+
+class NodeConnectionPhase(str, Enum):
+    CONNECTING = "connecting"
+    LIVE = "live"
+    BACKOFF = "backoff"
+    STOPPED = "stopped"
+
+
+@dataclass
+class NodeConnectionStatus:
+    phase: NodeConnectionPhase
+    detail: str | None = None
 
 
 @dataclass
@@ -67,6 +99,8 @@ class NodeTunnel:
     node: str
     local_port: int
     process: subprocess.Popen[bytes]
+    diagnostics: bytearray
+    stderr_thread: threading.Thread | None = None
 
 
 @dataclass
@@ -219,6 +253,7 @@ class NodeTunnelManager:
         self.startup_timeout = startup_timeout
         self._tunnels: dict[str, NodeTunnel] = {}
         self._startup_locks: dict[str, threading.Lock] = {}
+        self._states: dict[str, NodeConnectionStatus] = {}
         self._lock = threading.Lock()
         atexit.register(self.close)
 
@@ -227,6 +262,45 @@ class NodeTunnelManager:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
             return int(sock.getsockname()[1])
+
+    @staticmethod
+    def _drain_stderr(tunnel: NodeTunnel) -> None:
+        stream = getattr(tunnel.process, "stderr", None)
+        if stream is None:
+            return
+        try:
+            while True:
+                chunk = stream.read(1024)
+                if not chunk:
+                    return
+                tunnel.diagnostics.extend(chunk)
+                if len(tunnel.diagnostics) > SSH_DIAGNOSTIC_LIMIT:
+                    del tunnel.diagnostics[:-SSH_DIAGNOSTIC_LIMIT]
+        except (OSError, ValueError):
+            return
+
+    def _set_state(self, node: str, phase: NodeConnectionPhase, detail: str | None = None) -> None:
+        with self._lock:
+            self._states[node] = NodeConnectionStatus(phase=phase, detail=detail)
+
+    def connection_status(self, node: str) -> NodeConnectionStatus:
+        with self._lock:
+            return self._states.get(
+                node, NodeConnectionStatus(NodeConnectionPhase.STOPPED, "not started")
+            )
+
+    def get_live(self, node: str) -> NodeTunnel:
+        """Return an established tunnel without starting blocking work."""
+
+        with self._lock:
+            tunnel = self._tunnels.get(node)
+            status = self._states.get(node)
+        if tunnel is not None and tunnel.process.poll() is None:
+            if status is None or status.phase == NodeConnectionPhase.LIVE:
+                return tunnel
+        phase = status.phase.value if status is not None else NodeConnectionPhase.STOPPED.value
+        detail = status.detail if status is not None else "connection actor has not started"
+        raise NodeNotReadyError(node, phase, detail)
 
     def ensure(self, node: str) -> NodeTunnel:
         """Return a live tunnel, starting and health-checking it when needed."""
@@ -240,9 +314,11 @@ class NodeTunnelManager:
             with self._lock:
                 existing = self._tunnels.get(node)
                 if existing and existing.process.poll() is None:
+                    self._states[node] = NodeConnectionStatus(NodeConnectionPhase.LIVE)
                     return existing
                 if existing:
                     self._tunnels.pop(node, None)
+                self._states[node] = NodeConnectionStatus(NodeConnectionPhase.CONNECTING)
 
                 local_port = self._reserve_port()
                 args = [
@@ -256,11 +332,12 @@ class NodeTunnelManager:
                     "ConnectionAttempts=1",
                     "-o",
                     "StrictHostKeyChecking=yes",
-                    # A Host alias may define unrelated LocalForward entries. One
-                    # of those can be busy without invalidating our dynamic CAO
-                    # forward; the /health probe below is its success criterion.
                     "-o",
-                    "ExitOnForwardFailure=no",
+                    "ExitOnForwardFailure=yes",
+                    "-o",
+                    "ServerAliveInterval=15",
+                    "-o",
+                    "ServerAliveCountMax=3",
                     "-L",
                     f"127.0.0.1:{local_port}:127.0.0.1:{self.remote_port}",
                     node,
@@ -269,9 +346,22 @@ class NodeTunnelManager:
                     args,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                 )
-                tunnel = NodeTunnel(node=node, local_port=local_port, process=process)
+                tunnel = NodeTunnel(
+                    node=node,
+                    local_port=local_port,
+                    process=process,
+                    diagnostics=bytearray(),
+                )
+                if getattr(process, "stderr", None) is not None:
+                    tunnel.stderr_thread = threading.Thread(
+                        target=self._drain_stderr,
+                        args=(tunnel,),
+                        name=f"fleet-ssh-stderr-{node}",
+                        daemon=True,
+                    )
+                    tunnel.stderr_thread.start()
                 self._tunnels[node] = tunnel
 
             health_url = f"http://127.0.0.1:{local_port}/health"
@@ -283,6 +373,7 @@ class NodeTunnelManager:
                 try:
                     with urllib.request.urlopen(health_url, timeout=0.5) as response:
                         if response.status == 200:
+                            self._set_state(node, NodeConnectionPhase.LIVE)
                             return tunnel
                 except (OSError, urllib.error.URLError) as exc:
                     last_error = exc
@@ -290,15 +381,22 @@ class NodeTunnelManager:
                 if remaining > 0:
                     time.sleep(min(0.1, remaining))
 
-            self.drop(node)
-            detail = f": {last_error}" if last_error else ""
+            diagnostics = bytes(tunnel.diagnostics).decode("utf-8", errors="replace").strip()
+            detail = diagnostics or (str(last_error) if last_error else "SSH tunnel exited")
+            self.drop(node, phase=NodeConnectionPhase.BACKOFF, detail=detail)
             raise NodeUnavailableError(
-                f"CAO server is not reachable on {node}:127.0.0.1:{self.remote_port}{detail}"
+                f"CAO server is not reachable on {node}:127.0.0.1:{self.remote_port}: {detail}"
             )
 
-    def drop(self, node: str) -> None:
+    def drop(
+        self,
+        node: str,
+        phase: NodeConnectionPhase = NodeConnectionPhase.BACKOFF,
+        detail: str | None = None,
+    ) -> None:
         with self._lock:
             tunnel = self._tunnels.pop(node, None)
+            self._states[node] = NodeConnectionStatus(phase=phase, detail=detail)
         if tunnel and tunnel.process.poll() is None:
             tunnel.process.terminate()
             try:
@@ -309,7 +407,7 @@ class NodeTunnelManager:
 
     def close(self) -> None:
         for node in list(self._tunnels):
-            self.drop(node)
+            self.drop(node, phase=NodeConnectionPhase.STOPPED)
 
 
 class FleetService:
@@ -324,9 +422,25 @@ class FleetService:
         self.ssh_config_path = ssh_config_path
         self._runner = runner
         self.tunnels = tunnel_manager or NodeTunnelManager()
+        self._request_executor = ThreadPoolExecutor(
+            max_workers=FLEET_REQUEST_WORKERS,
+            thread_name_prefix="fleet-request",
+        )
+        atexit.register(self.close)
+
+    def close(self) -> None:
+        self.tunnels.close()
+        self._request_executor.shutdown(wait=False, cancel_futures=True)
 
     def list_nodes(self) -> list[FleetNode]:
         return [FleetNode(name=name) for name in discover_ssh_aliases(self.ssh_config_path)]
+
+    async def _run_request_operation(self, fn: Callable[..., object], *args: object) -> object:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._request_executor,
+            functools.partial(fn, *args),
+        )
 
     def _validated_node(self, node: str) -> str:
         if node not in discover_ssh_aliases(self.ssh_config_path):
@@ -370,6 +484,12 @@ class FleetService:
             return FleetNodeCheck(name=node, status="reachable")
         detail = (result.stderr or "SSH connection failed").strip().splitlines()[-1]
         return FleetNodeCheck(name=node, status="unreachable", detail=detail[:300])
+
+    async def check_node_async(self, node: str) -> FleetNodeCheck:
+        return cast(
+            FleetNodeCheck,
+            await self._run_request_operation(self.check_node, node),
+        )
 
     def browse_directories(
         self,
@@ -418,6 +538,24 @@ class FleetService:
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise RemoteBrowseError("Remote node returned an invalid directory listing") from exc
 
+    async def browse_directories_async(
+        self,
+        node: str,
+        path: str = "~",
+        include_hidden: bool = False,
+        limit: int = MAX_DIRECTORY_ENTRIES,
+    ) -> RemoteDirectoryListing:
+        return cast(
+            RemoteDirectoryListing,
+            await self._run_request_operation(
+                self.browse_directories,
+                node,
+                path,
+                include_hidden,
+                limit,
+            ),
+        )
+
     def proxy_request(
         self,
         node: str,
@@ -432,7 +570,7 @@ class FleetService:
         node = self._validated_node(node)
         if not remote_path.startswith("/") or ".." in remote_path.split("/"):
             raise ValueError("remote_path must be an absolute API path without traversal")
-        tunnel = self.tunnels.ensure(node)
+        tunnel = self.tunnels.get_live(node)
         url = f"http://127.0.0.1:{tunnel.local_port}{remote_path}"
         if query:
             url = f"{url}?{query}"
@@ -440,8 +578,9 @@ class FleetService:
         if content_type:
             headers["Content-Type"] = content_type
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        timeout = 90 if method == "POST" and remote_path.startswith("/sessions") else 30
         try:
-            with urllib.request.urlopen(request, timeout=95) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return FleetProxyResponse(
                     status_code=response.status,
                     body=response.read(),
@@ -454,13 +593,42 @@ class FleetService:
                 content_type=exc.headers.get("Content-Type"),
             )
         except (OSError, urllib.error.URLError) as exc:
-            self.tunnels.drop(node)
+            self.tunnels.drop(
+                node,
+                phase=NodeConnectionPhase.BACKOFF,
+                detail=f"{type(exc).__name__}: {exc}",
+            )
             raise NodeUnavailableError(f"Lost connection to CAO server on {node}") from exc
+
+    async def proxy_request_async(
+        self,
+        node: str,
+        method: str,
+        remote_path: str,
+        query: str = "",
+        body: bytes | None = None,
+        content_type: str | None = None,
+    ) -> FleetProxyResponse:
+        """Run one proxied request without consuming asyncio's shared executor."""
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._request_executor,
+            functools.partial(
+                self.proxy_request,
+                node=node,
+                method=method,
+                remote_path=remote_path,
+                query=query,
+                body=body,
+                content_type=content_type,
+            ),
+        )
 
     def fleet_overview(self, nodes: Sequence[str] | None = None) -> list[FleetNodeOverview]:
         """Fetch session summaries from all requested nodes with bounded concurrency."""
 
-        selected = list(nodes) if nodes is not None else [node.name for node in self.list_nodes()]
+        selected = list(nodes) if nodes is not None else configured_fleet_nodes()
         for node in selected:
             self._validated_node(node)
 
@@ -502,6 +670,14 @@ class FleetService:
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected)))) as executor:
             results = list(executor.map(inspect, selected))
         return sorted(results, key=lambda item: (item.name.lower(), item.name))
+
+    async def fleet_overview_async(
+        self, nodes: Sequence[str] | None = None
+    ) -> list[FleetNodeOverview]:
+        return cast(
+            list[FleetNodeOverview],
+            await self._run_request_operation(self.fleet_overview, nodes),
+        )
 
 
 fleet_service = FleetService()

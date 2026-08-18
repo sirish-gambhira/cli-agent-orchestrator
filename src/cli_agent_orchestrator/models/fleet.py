@@ -28,15 +28,35 @@ class FleetNodeOverview(BaseModel):
     detail: Optional[str] = None
 
 
+class FleetConfiguration(BaseModel):
+    """Controller inventory and terminal transport configuration."""
+
+    nodes: list[str] = Field(default_factory=list)
+    terminal_transport: Literal["ttyd"] = "ttyd"
+
+
+class FleetTerminalAttachment(BaseModel):
+    """One controller-owned ttyd attachment to a remote tmux target."""
+
+    id: str
+    node: str
+    terminal_id: str
+    state: Literal["starting", "live", "failed", "closed"]
+    view_url: str
+    expires_at: str
+    detail: Optional[str] = None
+
+
 class FleetCachedNode(BaseModel):
     """Last-known state for one persistently monitored execution node."""
 
     name: str
-    status: Literal["live", "stale", "offline"]
+    status: Literal["live", "stale", "offline", "unmonitored"]
     sessions: list[dict] = Field(default_factory=list)
     sequence: int = 0
     last_seen: Optional[str] = None
     detail: Optional[str] = None
+    connection_state: Optional[Literal["connecting", "live", "backoff", "stopped"]] = None
 
 
 class RemoteDirectoryEntry(BaseModel):

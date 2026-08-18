@@ -65,10 +65,26 @@ export interface FleetNodeOverview {
 
 export interface FleetCachedNode {
   name: string
-  status: 'live' | 'stale' | 'offline'
+  status: 'live' | 'stale' | 'offline' | 'unmonitored'
   sessions: Array<Session & { terminals?: Array<TerminalMeta & { status?: string | null }> }>
   sequence: number
   last_seen: string | null
+  detail: string | null
+  connection_state?: 'connecting' | 'live' | 'backoff' | 'stopped' | null
+}
+
+export interface FleetConfiguration {
+  nodes: string[]
+  terminal_transport: 'ttyd'
+}
+
+export interface FleetTerminalAttachment {
+  id: string
+  node: string
+  terminal_id: string
+  state: 'starting' | 'live' | 'failed' | 'closed'
+  view_url: string
+  expires_at: string
   detail: string | null
 }
 
@@ -242,12 +258,22 @@ export interface GraphExportResult {
 export const api = {
   // Laptop fleet controller
   listFleetNodes: () => fetchJSON<FleetNode[]>('/fleet/nodes'),
+  getFleetConfiguration: () => fetchJSON<FleetConfiguration>('/fleet/config'),
   getFleetOverview: (nodes?: string[]) => fetchJSON<FleetNodeOverview[]>(`/fleet/overview${nodes?.length ? `?nodes=${encodeURIComponent(nodes.join(','))}` : ''}`, { timeoutMs: 60000 }),
   getFleetState: (nodes?: string[]) => fetchJSON<FleetCachedNode[]>(`/fleet/state${nodes?.length ? `?nodes=${encodeURIComponent(nodes.join(','))}` : ''}`),
   checkFleetNode: (node: string) =>
     fetchJSON<{ name: string; status: 'reachable' | 'unreachable'; detail: string | null }>(`/fleet/nodes/${encodeURIComponent(node)}/check`),
   browseFleetDirectories: (node: string, path = '~', includeHidden = false) =>
     fetchJSON<RemoteDirectoryListing>(`/fleet/nodes/${encodeURIComponent(node)}/directories?path=${encodeURIComponent(path)}&include_hidden=${includeHidden}`),
+  createFleetTerminalAttachment: (node: string, terminalId: string) =>
+    fetchJSON<FleetTerminalAttachment>(`/fleet/nodes/${encodeURIComponent(node)}/terminals/${encodeURIComponent(terminalId)}/attachments`, {
+      method: 'POST',
+      timeoutMs: 10000,
+    }),
+  getFleetTerminalAttachment: (attachmentId: string) =>
+    fetchJSON<FleetTerminalAttachment>(`/fleet/attachments/${encodeURIComponent(attachmentId)}`),
+  deleteFleetTerminalAttachment: (attachmentId: string) =>
+    fetchJSON<{ success: boolean }>(`/fleet/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' }),
 
   // Agent Profiles & Providers
   listProfiles: (node?: string | null) => fetchJSON<AgentProfileInfo[]>(nodeEndpoint('/agents/profiles', node)),

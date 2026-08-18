@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, FleetNode, PermissionMode, Session, SessionDetail } from './api'
+import { api, FleetCachedNode, FleetConfiguration, FleetNode, PermissionMode, Session, SessionDetail } from './api'
 
 // Only trigger React re-renders when data actually changed
 function jsonEqual(a: unknown, b: unknown): boolean {
@@ -34,6 +34,8 @@ interface Store {
   snackbar: Snackbar | null
   terminalStatuses: Record<string, string>
   fleetNodes: FleetNode[]
+  fleetState: FleetCachedNode[]
+  fleetConfiguration: FleetConfiguration | null
   selectedNode: string | null
 
   fetchSessions: () => Promise<void>
@@ -46,6 +48,8 @@ interface Store {
   setTerminalStatus: (id: string, status: string) => void
   clearTerminalStatuses: (ids: string[]) => void
   fetchFleetNodes: () => Promise<void>
+  fetchFleetState: () => Promise<FleetCachedNode[]>
+  fetchFleetConfiguration: () => Promise<FleetConfiguration>
   selectNode: (node: string | null) => Promise<void>
 }
 
@@ -57,6 +61,8 @@ export const useStore = create<Store>((set, get) => ({
   snackbar: null,
   terminalStatuses: {},
   fleetNodes: [],
+  fleetState: [],
+  fleetConfiguration: null,
   selectedNode: null,
 
   fetchSessions: async () => {
@@ -167,10 +173,27 @@ export const useStore = create<Store>((set, get) => ({
     }),
   fetchFleetNodes: async () => {
     try {
-      set({ fleetNodes: await api.listFleetNodes() })
+      const configuration = await api.getFleetConfiguration()
+      set({
+        fleetConfiguration: configuration,
+        fleetNodes: configuration.nodes.map(name => ({ name })),
+      })
     } catch {
       set({ fleetNodes: [] })
     }
+  },
+  fetchFleetState: async () => {
+    const fleetState = await api.getFleetState()
+    set({ fleetState })
+    return fleetState
+  },
+  fetchFleetConfiguration: async () => {
+    const fleetConfiguration = await api.getFleetConfiguration()
+    set({
+      fleetConfiguration,
+      fleetNodes: fleetConfiguration.nodes.map(name => ({ name })),
+    })
+    return fleetConfiguration
   },
   selectNode: async (node) => {
     set({

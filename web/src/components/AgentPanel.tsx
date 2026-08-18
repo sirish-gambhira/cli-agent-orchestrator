@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useStore } from '../store'
 import { api, AgentProfileInfo, FleetNodeOverview, PermissionMode, ProviderInfo, ProviderModelInfo } from '../api'
 import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Tag, Search, Mail, Plus, LogOut, Send, FileText, X } from 'lucide-react'
@@ -25,7 +25,7 @@ const SOURCE_LABELS: Record<string, string> = {
 }
 
 export function AgentPanel() {
-  const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, deleteSession, terminalStatuses, setTerminalStatus, fleetNodes, selectedNode, fetchFleetNodes, selectNode } = useStore()
+  const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, deleteSession, terminalStatuses, setTerminalStatus, fleetNodes, fleetState, fetchFleetState, selectedNode, fetchFleetNodes, selectNode } = useStore()
   const [provider, setProvider] = useState('none')
   const [profile, setProfile] = useState('')
   const [creating, setCreating] = useState(false)
@@ -87,10 +87,14 @@ export function AgentPanel() {
   const [outputTerminalId, setOutputTerminalId] = useState<string | null>(null)
   const [showSpawnModal, setShowSpawnModal] = useState(false)
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false)
-  const [fleetOverview, setFleetOverview] = useState<FleetNodeOverview[]>([])
   const [refreshingFleet, setRefreshingFleet] = useState(false)
   const notifiedWaiting = useRef(new Set<string>())
-  const monitoredNodes = fleetOverview.filter(node => node.status === 'reachable').map(node => node.name).join(',')
+  const fleetOverview = useMemo<FleetNodeOverview[]>(() => fleetState.map(node => ({
+    name: node.name,
+    status: node.status === 'live' || node.status === 'stale' ? 'reachable' : 'unreachable',
+    sessions: node.sessions,
+    detail: node.detail,
+  })), [fleetState])
 
   useEffect(() => {
     if (provider === 'none') {
@@ -103,13 +107,21 @@ export function AgentPanel() {
   useEffect(() => { fetchFleetNodes() }, [])
 
   useEffect(() => {
-    if (!monitoredNodes) return
-    const nodes = monitoredNodes.split(',')
-    const interval = setInterval(() => {
-      api.getFleetOverview(nodes).then(setFleetOverview).catch(() => {})
-    }, 10000)
-    return () => clearInterval(interval)
-  }, [monitoredNodes])
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout>
+    const poll = () => {
+      fetchFleetState()
+        .catch(() => {})
+        .finally(() => {
+          if (!stopped) timer = setTimeout(poll, 10000)
+        })
+    }
+    poll()
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+    }
+  }, [fetchFleetState])
 
   useEffect(() => {
     fleetOverview.forEach(node => node.sessions.forEach(session => {
@@ -282,8 +294,7 @@ export function AgentPanel() {
             <button
               onClick={() => {
                 setRefreshingFleet(true)
-                api.getFleetOverview()
-                  .then(setFleetOverview)
+                fetchFleetState()
                   .catch(error => showSnackbar({ type: 'error', message: error.detail || 'Fleet refresh failed' }))
                   .finally(() => setRefreshingFleet(false))
               }}

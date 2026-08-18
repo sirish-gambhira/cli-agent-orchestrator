@@ -12,13 +12,13 @@ import signal
 import struct
 import subprocess
 import termios
+import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, cast
 
-import websockets
 from fastapi import (
     BackgroundTasks,
     Body,
@@ -36,7 +36,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from cli_agent_orchestrator.backends import TerminalBackendError, TerminalNotFoundError
@@ -83,9 +83,11 @@ from cli_agent_orchestrator.graph.providers import GraphProvider, get_provider
 from cli_agent_orchestrator.graph.sinks import get_sink
 from cli_agent_orchestrator.models.fleet import (
     FleetCachedNode,
+    FleetConfiguration,
     FleetNode,
     FleetNodeCheck,
     FleetNodeOverview,
+    FleetTerminalAttachment,
     RemoteDirectoryListing,
 )
 from cli_agent_orchestrator.models.flow import Flow
@@ -132,7 +134,9 @@ from cli_agent_orchestrator.services.event_bus import bus
 from cli_agent_orchestrator.services.event_log_service import RING_CAPACITY
 from cli_agent_orchestrator.services.event_primitives import KINDS as EVENT_KINDS
 from cli_agent_orchestrator.services.fifo_reader import fifo_manager
+from cli_agent_orchestrator.services.fleet_inventory import configured_fleet_nodes
 from cli_agent_orchestrator.services.fleet_service import (
+    NodeNotReadyError,
     NodeUnavailableError,
     RemoteBrowseError,
     UnknownNodeError,
@@ -154,6 +158,11 @@ from cli_agent_orchestrator.services.profile_search import (
 )
 from cli_agent_orchestrator.services.status_monitor import status_monitor
 from cli_agent_orchestrator.services.step_output_store import _validate_key_part
+from cli_agent_orchestrator.services.terminal_gateway_service import (
+    TerminalAttachmentNotFound,
+    TerminalGatewayUnavailable,
+    terminal_gateway_service,
+)
 from cli_agent_orchestrator.services.terminal_service import OutputMode, TerminalInputBlockedError
 from cli_agent_orchestrator.services.worktree_service import WorktreeError
 from cli_agent_orchestrator.telemetry import init_telemetry, shutdown_telemetry
@@ -816,6 +825,10 @@ async def lifespan(app: FastAPI):
     status_monitor_task = asyncio.create_task(status_monitor.run())
     log_writer_task = asyncio.create_task(log_writer.run())
     inbox_service_task = asyncio.create_task(inbox_service.run(registry))
+    terminal_gateway_cleanup_task = asyncio.create_task(
+        terminal_gateway_service.cleanup_daemon(),
+        name="fleet-terminal-gateway-cleanup",
+    )
     fleet_state_monitor.start()
     logger.info("Event bus consumers started (StatusMonitor, LogWriter, InboxService)")
 
@@ -874,6 +887,9 @@ async def lifespan(app: FastAPI):
     yield
 
     await fleet_state_monitor.stop()
+    terminal_gateway_cleanup_task.cancel()
+    await asyncio.gather(terminal_gateway_cleanup_task, return_exceptions=True)
+    terminal_gateway_service.close()
 
     # Stop herdr inbox service on shutdown
     if herdr_inbox_task is not None:
@@ -1077,6 +1093,18 @@ async def list_fleet_nodes(
     return fleet_service.fleet_service.list_nodes()
 
 
+@app.get("/fleet/config", response_model=FleetConfiguration)
+async def get_fleet_configuration(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> FleetConfiguration:
+    """Return the controller's authoritative monitored inventory."""
+
+    return FleetConfiguration(
+        nodes=configured_fleet_nodes(),
+        terminal_transport="ttyd",
+    )
+
+
 @app.get("/fleet/overview", response_model=List[FleetNodeOverview])
 async def get_fleet_overview(
     nodes: Optional[str] = Query(default=None, description="Optional comma-separated SSH aliases"),
@@ -1084,9 +1112,15 @@ async def get_fleet_overview(
 ) -> List[FleetNodeOverview]:
     """Refresh session summaries across all or explicitly listed SSH nodes."""
 
-    selected = [value.strip() for value in nodes.split(",") if value.strip()] if nodes else None
+    selected = (
+        [value.strip() for value in nodes.split(",") if value.strip()]
+        if nodes
+        else configured_fleet_nodes()
+    )
+    if not selected:
+        return []
     try:
-        return await asyncio.to_thread(fleet_service.fleet_service.fleet_overview, selected)
+        return await fleet_service.fleet_service.fleet_overview_async(selected)
     except UnknownNodeError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -1099,7 +1133,7 @@ async def check_fleet_node(
     """Check one explicitly selected node using non-interactive OpenSSH."""
 
     try:
-        return fleet_service.fleet_service.check_node(node)
+        return await fleet_service.fleet_service.check_node_async(node)
     except UnknownNodeError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -1118,7 +1152,7 @@ async def browse_fleet_node_directories(
     """Return a bounded, directory-only listing from an SSH node."""
 
     try:
-        return fleet_service.fleet_service.browse_directories(
+        return await fleet_service.fleet_service.browse_directories_async(
             node=node,
             path=path,
             include_hidden=include_hidden,
@@ -1136,18 +1170,43 @@ async def browse_fleet_node_directories(
 
 @app.get("/fleet/state", response_model=List[FleetCachedNode])
 async def get_cached_fleet_state(
-    nodes: Optional[str] = Query(default=None, description="Optional comma-separated managed nodes"),
+    nodes: Optional[str] = Query(
+        default=None, description="Optional comma-separated managed nodes"
+    ),
     _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> List[FleetCachedNode]:
     """Return durable last-known state maintained by persistent node streams."""
 
-    selected = [item.strip() for item in nodes.split(",") if item.strip()] if nodes else None
-    try:
-        if selected:
-            fleet_state_monitor.ensure_nodes(selected)
-        return [FleetCachedNode.model_validate(item) for item in fleet_state_monitor.cache.view(selected)]
-    except UnknownNodeError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    monitored = configured_fleet_nodes()
+    selected = [item.strip() for item in nodes.split(",") if item.strip()] if nodes else monitored
+    if not selected:
+        return []
+    cached = {
+        item["name"]: item
+        for item in fleet_state_monitor.cache.view(selected, monitored_nodes=monitored)
+    }
+    result: List[FleetCachedNode] = []
+    for node in selected:
+        item = cached.get(
+            node,
+            {
+                "name": node,
+                "status": "offline" if node in monitored else "unmonitored",
+                "sessions": [],
+                "sequence": 0,
+                "last_seen": None,
+                "detail": None,
+            },
+        )
+        if node in monitored:
+            connection = fleet_service.fleet_service.tunnels.connection_status(node)
+            item["connection_state"] = connection.phase.value
+            if connection.phase.value != "live" and item["status"] == "live":
+                item["status"] = "stale"
+            if connection.detail:
+                item["detail"] = connection.detail
+        result.append(FleetCachedNode.model_validate(item))
+    return result
 
 
 @app.websocket("/fleet/state/ws")
@@ -1156,7 +1215,9 @@ async def stream_local_fleet_state(websocket: WebSocket):
 
     client_host = websocket.client.host if websocket.client else None
     if client_host not in WS_ALLOWED_CLIENTS:
-        await websocket.close(code=4003, reason="Fleet state stream is restricted to loopback clients")
+        await websocket.close(
+            code=4003, reason="Fleet state stream is restricted to loopback clients"
+        )
         return
     await websocket.accept()
     sequence = 0
@@ -1170,25 +1231,29 @@ async def stream_local_fleet_state(websocket: WebSocket):
             now = asyncio.get_running_loop().time()
             if encoded != previous:
                 sequence += 1
-                await websocket.send_json({
-                    "protocol": PROTOCOL_VERSION,
-                    "connection_id": connection_id,
-                    "type": "snapshot",
-                    "sequence": sequence,
-                    "sent_at": datetime.now(timezone.utc).isoformat(),
-                    "sessions": sessions,
-                })
+                await websocket.send_json(
+                    {
+                        "protocol": PROTOCOL_VERSION,
+                        "connection_id": connection_id,
+                        "type": "snapshot",
+                        "sequence": sequence,
+                        "sent_at": datetime.now(timezone.utc).isoformat(),
+                        "sessions": sessions,
+                    }
+                )
                 previous = encoded
                 last_heartbeat = now
             elif now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
                 sequence += 1
-                await websocket.send_json({
-                    "protocol": PROTOCOL_VERSION,
-                    "connection_id": connection_id,
-                    "type": "heartbeat",
-                    "sequence": sequence,
-                    "sent_at": datetime.now(timezone.utc).isoformat(),
-                })
+                await websocket.send_json(
+                    {
+                        "protocol": PROTOCOL_VERSION,
+                        "connection_id": connection_id,
+                        "type": "heartbeat",
+                        "sequence": sequence,
+                        "sent_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
                 last_heartbeat = now
             await asyncio.sleep(SNAPSHOT_INTERVAL_SECONDS)
     except (WebSocketDisconnect, RuntimeError):
@@ -1230,8 +1295,7 @@ async def proxy_fleet_node_api(
             detail="Remote mutating requests require cao:write or cao:admin",
         )
     try:
-        result = await asyncio.to_thread(
-            fleet_service.fleet_service.proxy_request,
+        result = await fleet_service.fleet_service.proxy_request_async(
             node=node,
             method=request.method,
             remote_path=f"/{remote_path}",
@@ -1243,6 +1307,12 @@ async def proxy_fleet_node_api(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except NodeNotReadyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": str(exc), "kind": "node_not_ready", "state": exc.state},
+            headers={"Retry-After": "2"},
+        ) from exc
     except NodeUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     if 200 <= result.status_code < 300:
@@ -1271,56 +1341,105 @@ async def proxy_fleet_node_api(
     return Response(content=result.body, status_code=result.status_code, headers=headers)
 
 
-@app.websocket("/fleet/nodes/{node}/terminals/{terminal_id}/ws")
-async def proxy_fleet_terminal_ws(websocket: WebSocket, node: str, terminal_id: str):
-    """Relay one browser terminal connection through the selected node tunnel."""
+@app.post(
+    "/fleet/nodes/{node}/terminals/{terminal_id}/attachments",
+    response_model=FleetTerminalAttachment,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_fleet_terminal_attachment(
+    node: str,
+    terminal_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> FleetTerminalAttachment:
+    """Create or reuse a loopback ttyd attachment for one remote terminal."""
 
-    if not is_ws_origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
-        await websocket.close(code=4403, reason="WebSocket Origin not allowed")
-        return
+    if node not in configured_fleet_nodes():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Node is not monitored by this controller: {node}",
+        )
     try:
-        fleet_service.fleet_service.validate_node(node)
-        tunnel = await asyncio.to_thread(fleet_service.fleet_service.tunnels.ensure, node)
-    except UnknownNodeError:
-        await websocket.close(code=4404, reason="Unknown SSH node")
-        return
-    except NodeUnavailableError:
-        await websocket.close(code=4502, reason="Remote CAO server unavailable")
-        return
-
-    remote_url = f"ws://127.0.0.1:{tunnel.local_port}/terminals/{terminal_id}/ws"
+        result = await fleet_service.fleet_service.proxy_request_async(
+            node=node,
+            method="GET",
+            remote_path=f"/terminals/{urllib.parse.quote(terminal_id, safe='')}",
+        )
+    except NodeNotReadyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": str(exc), "kind": "node_not_ready", "state": exc.state},
+            headers={"Retry-After": "2"},
+        ) from exc
+    except NodeUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if result.status_code == 404:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Remote terminal not found"
+        )
+    if result.status_code != 200:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Remote CAO server returned HTTP {result.status_code}",
+        )
     try:
-        async with websockets.connect(remote_url, origin=None) as remote:
-            await websocket.accept()
+        terminal = json.loads(result.body)
+        session_name = terminal.get("tmux_session") or terminal["session_name"]
+        window_name = terminal.get("tmux_window") or terminal["name"]
+        if not isinstance(session_name, str) or not isinstance(window_name, str):
+            raise TypeError("invalid terminal target")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Remote CAO server returned invalid terminal metadata",
+        ) from exc
+    try:
+        return await terminal_gateway_service.create_async(
+            node=node,
+            terminal_id=terminal_id,
+            session_name=session_name,
+            window_name=window_name,
+        )
+    except (TerminalGatewayUnavailable, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=str(exc),
+        ) from exc
 
-            async def browser_to_node() -> None:
-                while True:
-                    message = await websocket.receive()
-                    if message["type"] == "websocket.disconnect":
-                        return
-                    if message.get("text") is not None:
-                        await remote.send(message["text"])
-                    elif message.get("bytes") is not None:
-                        await remote.send(message["bytes"])
 
-            async def node_to_browser() -> None:
-                async for message in remote:
-                    if isinstance(message, bytes):
-                        await websocket.send_bytes(message)
-                    else:
-                        await websocket.send_text(message)
+@app.get("/fleet/attachments/{attachment_id}", response_model=FleetTerminalAttachment)
+async def get_fleet_terminal_attachment(
+    attachment_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> FleetTerminalAttachment:
+    """Return attachment health and refresh its idle lease."""
 
-            tasks = {
-                asyncio.create_task(browser_to_node()),
-                asyncio.create_task(node_to_browser()),
-            }
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*done, *pending, return_exceptions=True)
-    except (OSError, websockets.WebSocketException):
-        if websocket.client_state.name == "CONNECTED":
-            await websocket.close(code=4502, reason="Remote terminal connection failed")
+    try:
+        return terminal_gateway_service.get(attachment_id)
+    except TerminalAttachmentNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@app.get("/fleet/attachments/{attachment_id}/view")
+async def view_fleet_terminal_attachment(
+    attachment_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> RedirectResponse:
+    """Redirect the local browser to the attachment's loopback ttyd endpoint."""
+
+    try:
+        return RedirectResponse(terminal_gateway_service.target_url(attachment_id))
+    except TerminalAttachmentNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@app.delete("/fleet/attachments/{attachment_id}")
+async def delete_fleet_terminal_attachment(
+    attachment_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, bool]:
+    """Terminate a controller-owned ttyd process."""
+
+    return {"success": terminal_gateway_service.delete(attachment_id)}
 
 
 def _mcp_apps_enabled() -> bool:
@@ -2241,7 +2360,9 @@ async def list_provider_models_endpoint(
 
     binary = shutil.which("agent")
     if binary is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cursor CLI is not installed")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Cursor CLI is not installed"
+        )
 
     try:
         completed = subprocess.run(

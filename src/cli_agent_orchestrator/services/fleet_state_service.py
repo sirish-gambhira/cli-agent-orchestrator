@@ -7,6 +7,7 @@ import functools
 import json
 import logging
 import os
+import random
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,7 @@ import websockets
 
 from cli_agent_orchestrator.constants import CAO_HOME_DIR
 from cli_agent_orchestrator.services import session_service
+from cli_agent_orchestrator.services.fleet_inventory import configured_fleet_nodes
 from cli_agent_orchestrator.services.fleet_service import FleetService, fleet_service
 
 logger = logging.getLogger(__name__)
@@ -152,10 +154,14 @@ class FleetStateCache:
             if self._dirty:
                 self._write()
 
-    def update(self, node: str, connection_id: str, sequence: int, sessions: list[dict[str, Any]]) -> None:
+    def update(
+        self, node: str, connection_id: str, sequence: int, sessions: list[dict[str, Any]]
+    ) -> None:
         with self._lock:
             current = self._nodes.get(node, {})
-            if current.get("connection_id") == connection_id and sequence <= int(current.get("sequence", -1)):
+            if current.get("connection_id") == connection_id and sequence <= int(
+                current.get("sequence", -1)
+            ):
                 return
             deleted = self._deleted_sessions.get(node, set())
             incoming_names = {
@@ -221,9 +227,13 @@ class FleetStateCache:
     def heartbeat(self, node: str, connection_id: str, sequence: int) -> None:
         with self._lock:
             current = self._nodes.setdefault(node, {"name": node, "sessions": []})
-            if current.get("connection_id") == connection_id and sequence <= int(current.get("sequence", -1)):
+            if current.get("connection_id") == connection_id and sequence <= int(
+                current.get("sequence", -1)
+            ):
                 return
-            current.update(connection_id=connection_id, sequence=sequence, last_seen=utc_now(), detail=None)
+            current.update(
+                connection_id=connection_id, sequence=sequence, last_seen=utc_now(), detail=None
+            )
             self._mark_dirty()
 
     def failure(self, node: str, detail: str) -> None:
@@ -232,9 +242,14 @@ class FleetStateCache:
             current["detail"] = detail[:300]
             self._mark_dirty()
 
-    def view(self, nodes: Sequence[str] | None = None) -> list[dict[str, Any]]:
+    def view(
+        self,
+        nodes: Sequence[str] | None = None,
+        monitored_nodes: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc)
         selected = set(nodes) if nodes is not None else None
+        monitored = set(monitored_nodes) if monitored_nodes is not None else None
         with self._lock:
             result = []
             for name, raw in self._nodes.items():
@@ -245,7 +260,14 @@ class FleetStateCache:
                     age = (now - datetime.fromisoformat(item["last_seen"])).total_seconds()
                 except (KeyError, TypeError, ValueError):
                     age = float("inf")
-                item["status"] = "live" if age <= STALE_AFTER_SECONDS else "stale" if age <= OFFLINE_AFTER_SECONDS else "offline"
+                if monitored is not None and name not in monitored:
+                    item["status"] = "unmonitored"
+                else:
+                    item["status"] = (
+                        "live"
+                        if age <= STALE_AFTER_SECONDS
+                        else "stale" if age <= OFFLINE_AFTER_SECONDS else "offline"
+                    )
                 result.append(item)
             return sorted(result, key=lambda item: item["name"].lower())
 
@@ -276,8 +298,7 @@ class FleetStateMonitor:
 
     @staticmethod
     def configured_nodes() -> list[str]:
-        raw = os.environ.get("CAO_FLEET_NODES", "")
-        return [part.strip() for part in raw.split(",") if part.strip()]
+        return configured_fleet_nodes()
 
     def start(self) -> None:
         self.ensure_nodes(self.configured_nodes())
@@ -286,7 +307,9 @@ class FleetStateMonitor:
         for node in nodes:
             self.service.validate_node(node)
             if node not in self._tasks or self._tasks[node].done():
-                self._tasks[node] = asyncio.create_task(self._monitor(node), name=f"fleet-state-{node}")
+                self._tasks[node] = asyncio.create_task(
+                    self._monitor(node), name=f"fleet-state-{node}"
+                )
 
     async def stop(self) -> None:
         tasks = list(self._tasks.values())
@@ -305,7 +328,9 @@ class FleetStateMonitor:
             try:
                 tunnel = await self._run_tunnel_op(self.service.tunnels.ensure, node)
                 url = f"ws://127.0.0.1:{tunnel.local_port}/fleet/state/ws"
-                async with websockets.connect(url, origin=None, ping_interval=15, ping_timeout=15) as remote:
+                async with websockets.connect(
+                    url, origin=None, ping_interval=15, ping_timeout=15
+                ) as remote:
                     delay = 1.0
                     async for raw in remote:
                         message = json.loads(raw)
@@ -327,7 +352,7 @@ class FleetStateMonitor:
             except Exception as exc:
                 await self._run_tunnel_op(self.service.tunnels.drop, node)
                 self.cache.failure(node, f"{type(exc).__name__}: {exc}")
-                await asyncio.sleep(delay)
+                await asyncio.sleep(delay * random.uniform(0.8, 1.2))
                 delay = min(delay * 2, 30.0)
 
 

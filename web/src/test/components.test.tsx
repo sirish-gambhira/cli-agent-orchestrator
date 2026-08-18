@@ -4,8 +4,9 @@ import { StatusBadge } from '../components/StatusBadge'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { canCreateSession, FALLBACK_PROVIDERS, showsAgentProfile } from '../components/AgentPanel'
-import { acknowledgeSessionDeletions, mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet } from '../components/DashboardHome'
-import { isMouseTrackingModeSequence, isReplicateShortcut, resolveReplicationTarget } from '../components/TerminalView'
+import { acknowledgeSessionDeletions, mergeFleetSessions, sessionsFromCachedFleet, sessionsFromFleet, terminalHash } from '../components/DashboardHome'
+import { TerminalView, isMouseTrackingModeSequence, isReplicateShortcut, resolveReplicationTarget } from '../components/TerminalView'
+import { api } from '../api'
 
 describe('terminal text selection', () => {
   it('blocks provider mouse-tracking modes that disable xterm selection', () => {
@@ -56,6 +57,64 @@ describe('terminal duplication', () => {
     expect(resolveReplicationTarget('none', null, availableProviders)).toEqual({
       provider: 'none', fellBackToTerminal: false,
     })
+  })
+})
+
+describe('remote terminal gateway', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.spyOn(api, 'deleteFleetTerminalAttachment').mockResolvedValue({ success: true })
+  })
+
+  it('renders a ttyd attachment instead of a blank xterm pane', async () => {
+    vi.spyOn(api, 'createFleetTerminalAttachment').mockResolvedValue({
+      id: 'attach-1',
+      node: '5c-01',
+      terminal_id: 'term-1',
+      state: 'live',
+      view_url: '/fleet/attachments/attach-1/view',
+      expires_at: '2026-08-19T00:00:00Z',
+      detail: null,
+    })
+
+    render(
+      <TerminalView
+        terminalId="term-1"
+        sessionName="session-1"
+        node="5c-01"
+        replicationEnabled={false}
+        onClose={() => {}}
+      />,
+    )
+
+    expect(await screen.findByTitle('session-1 terminal')).toHaveAttribute(
+      'src',
+      '/fleet/attachments/attach-1/view',
+    )
+  })
+
+  it('shows an actionable error and captured output when gateway startup fails', async () => {
+    vi.spyOn(api, 'createFleetTerminalAttachment').mockRejectedValue(
+      Object.assign(new Error('501 Not Implemented'), { detail: 'ttyd is not installed' }),
+    )
+    vi.spyOn(api, 'getTerminalOutput').mockResolvedValue({
+      output: 'last known terminal output',
+      mode: 'full',
+    })
+
+    render(
+      <TerminalView
+        terminalId="term-1"
+        sessionName="session-1"
+        node="5c-01"
+        replicationEnabled={false}
+        onClose={() => {}}
+      />,
+    )
+
+    expect(await screen.findByText('Terminal connection failed')).toBeInTheDocument()
+    expect(await screen.findByText('ttyd is not installed')).toBeInTheDocument()
+    expect(await screen.findByText('last known terminal output')).toBeInTheDocument()
   })
 })
 
@@ -237,6 +296,12 @@ describe('FALLBACK_PROVIDERS', () => {
 })
 
 describe('fleet dashboard aggregation', () => {
+  it('creates stable node/session/terminal deep links', () => {
+    expect(terminalHash('5c-01', 'my session', 'term/1')).toBe(
+      '#terminal/5c-01/my%20session/term%2F1',
+    )
+  })
+
   it('keeps a deletion barrier until a newer poll confirms absence', () => {
     const key = 'secure-02:tgt-race'
     const barriers = new Map([[key, { source: 'fleet' as const, afterRequest: 3 }]])

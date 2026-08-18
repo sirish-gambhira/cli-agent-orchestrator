@@ -105,6 +105,15 @@ def test_new_connection_may_restart_sequence(tmp_path):
     assert cache.view()[0]["sessions"] == [{"id": "reconciled"}]
 
 
+def test_unconfigured_historical_node_is_not_reported_offline(tmp_path):
+    cache = FleetStateCache(tmp_path / "fleet-state.json")
+    cache.update("old-node", "stream-a", 1, [])
+
+    view = cache.view(["old-node"], monitored_nodes=["current-node"])
+
+    assert view[0]["status"] == "unmonitored"
+
+
 def test_delete_tombstone_prevents_stale_snapshot_resurrection(tmp_path):
     cache = FleetStateCache(tmp_path / "fleet-state.json")
     cache.update("secure-02", "stream-a", 1, [{"id": "tgt-deleted"}, {"id": "tgt-live"}])

@@ -396,11 +396,12 @@ ssh jbom-03 'cao-server'
 Then build and start this branch on the laptop:
 
 ```bash
+brew install ttyd
 cd ~/Documents/cli-agent-orchestrator/web
 npm ci
 npm run build
 cd ..
-CAO_API_PORT=9890 CAO_FLEET_NODES=jbom-03,secure-02 uv run cao-server
+uv run fleet --nodes jbom-03,secure-02
 ```
 
 Open `http://127.0.0.1:9890`, choose **Agents**, and select an execution node.
@@ -606,42 +607,30 @@ or the configured limits are exhausted.
 
 ### Transport and operational hardening
 
-The current transport choices are appropriate for the single-user fleet MVP:
-OpenSSH owns authentication, aliases, jump hosts, and host-key verification;
-node APIs stay loopback-only behind controller-owned SSH tunnels; fleet state
-uses persistent, versioned WebSocket streams with sequence numbers, connection
-IDs, heartbeats, exponential reconnect, authoritative snapshots, durable cache,
-and deletion tombstones; live terminals use a real PTY attached to tmux with
-binary WebSocket output, resize propagation, native tmux scrollback, and clean
-detach. A switch to gRPC is not required for this architecture.
+The single-user fleet now separates its control and terminal data planes:
+
+- OpenSSH owns authentication, aliases, jump hosts, and host-key verification.
+- Node CAO APIs remain loopback-only behind controller-owned SSH forwards.
+- The configured `CAO_FLEET_NODES` inventory is authoritative; old durable
+  snapshots remain recoverable but are not presented as offline monitored nodes.
+- One supervised connection actor per configured node owns tunnel startup,
+  keepalives, bounded diagnostics, reconnect backoff, and shutdown. Requests
+  never initiate a blocking tunnel setup.
+- Fleet state keeps its versioned WebSocket snapshots, sequence numbers,
+  connection IDs, heartbeats, durable cache, and deletion tombstones.
+- Remote terminal attachment uses a laptop-local, loopback-only `ttyd` process
+  that runs `ssh -tt <node> tmux attach-session`. Terminal bytes no longer pass
+  through the controller's FastAPI request-worker pool or a second CAO
+  WebSocket.
+
+The old controller-to-node PTY WebSocket relay has been removed; remote browser
+terminals always use the loopback ttyd gateway.
 
 Before treating the fleet as an unattended or multi-user production service,
-complete the following hardening work:
-
-- add SSH `ServerAliveInterval` and `ServerAliveCountMax` settings, plus jitter
-  to reconnect backoff;
-- isolate the managed CAO forward with `ClearAllForwardings=yes` and use
-  `ExitOnForwardFailure=yes`, avoiding interference from unrelated forwards in
-  the selected SSH host block;
-- retain bounded SSH stderr diagnostics instead of discarding tunnel startup
-  and disconnect errors;
-- bound terminal output queues and input frame sizes, with explicit
-  backpressure and overload behavior;
-- add browser terminal reconnect/resume behavior and a visible connection-state
-  indicator;
-- define deterministic resize ownership so multiple viewers or split panes do
-  not fight over one shared tmux window size;
-- supervise the laptop controller and node servers with launchd/systemd rather
-  than tmux when unattended availability is required;
-- add structured tunnel, state-stream, reconnect, queue-depth, and terminal
-  lifecycle metrics and logs;
-- add protocol/capability negotiation for mixed controller and node versions;
-- review authentication and authorization before binding any controller or
-  node API beyond loopback. The PTY WebSocket is full terminal access and must
-  not be exposed directly to an untrusted network.
-
-These items harden lifecycle, observability, and resource limits; they do not
-require replacing SSH, WebSocket, PTY, or tmux as the core transport design.
+add service-manager supervision, structured connection metrics, mixed-version
+capability negotiation, and a dedicated authentication review. The controller,
+node APIs, and ttyd endpoints must remain bound to loopback in the current trust
+model.
 
 ## 15. Remaining MVP Decisions
 
