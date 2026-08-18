@@ -243,6 +243,30 @@ class TmuxClient:
         # running"; both mean the session does not exist.
         return result.returncode == 0
 
+    @staticmethod
+    def _has_window_via_cli(session_name: str, window_name: str) -> Optional[bool]:
+        """Parse-free exact window probe used when libtmux listings fail."""
+
+        try:
+            session_target = f"={validate_tmux_name(session_name, 'session_name')}"
+            expected_window = validate_tmux_name(window_name, "window_name")
+        except ValueError as e:
+            logger.error("Cannot build tmux window target: %s", e)
+            return None
+        try:
+            result = subprocess.run(
+                ["tmux", "list-windows", "-t", session_target, "-F", "#{window_name}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as e:
+            logger.error("Failed to run `tmux list-windows -t %s`: %s", session_target, e)
+            return None
+        if result.returncode != 0:
+            return False
+        return expected_window in {line.strip() for line in result.stdout.splitlines()}
+
     # Kept as an alias so existing callers/tests referencing the class
     # attribute keep working; the canonical set lives in
     # utils/path_validation.py (shared with archive export/import, D5).
@@ -988,6 +1012,25 @@ class TmuxClient:
             return exists
         except Exception:
             return False
+
+    def window_exists(self, session_name: str, window_name: str) -> bool:
+        """Return whether an exact session/window target exists."""
+
+        try:
+            session = self._find_session(session_name)
+            if session is None:
+                return False
+            return self._find_window(session, session_name, window_name) is not None
+        except TmuxLookupError:
+            logger.warning(
+                "tmux listing failed for window %s:%s — probing with the tmux CLI",
+                session_name,
+                window_name,
+            )
+            exists = self._has_window_via_cli(session_name, window_name)
+            if exists is None:
+                raise
+            return exists
 
     def get_pane_working_directory(self, session_name: str, window_name: str) -> Optional[str]:
         """Get the current working directory of a pane.

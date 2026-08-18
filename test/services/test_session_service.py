@@ -241,6 +241,53 @@ class TestGetSession:
         assert result["terminals"][0]["status"] == "processing"
         assert result["terminals"][1]["status"] == "completed"
 
+    @patch("cli_agent_orchestrator.services.status_monitor.status_monitor.get_status")
+    @patch("cli_agent_orchestrator.services.session_service.db_delete_terminal")
+    @patch("cli_agent_orchestrator.services.session_service.list_terminals_by_session")
+    @patch("cli_agent_orchestrator.services.session_service.get_backend")
+    def test_get_session_removes_missing_windows_and_prefers_newest_live_terminal(
+        self,
+        mock_get_backend,
+        mock_list_terminals,
+        mock_delete_terminal,
+        mock_get_status,
+    ):
+        from cli_agent_orchestrator.models.terminal import TerminalStatus
+
+        backend = mock_get_backend.return_value
+        backend.session_exists.return_value = True
+        backend.list_sessions.return_value = [{"id": "simulator"}]
+        backend.window_exists.side_effect = lambda _session, window: window != "terminal-old"
+        mock_list_terminals.return_value = [
+            {
+                "id": "stale",
+                "tmux_session": "simulator",
+                "tmux_window": "terminal-old",
+                "last_active": "2026-08-14T00:00:00",
+            },
+            {
+                "id": "older-live",
+                "tmux_session": "simulator",
+                "tmux_window": "terminal-a",
+                "last_active": "2026-08-17T00:00:00",
+            },
+            {
+                "id": "newest-live",
+                "tmux_session": "simulator",
+                "tmux_window": "terminal-b",
+                "last_active": "2026-08-18T00:00:00",
+            },
+        ]
+        mock_get_status.return_value = TerminalStatus.IDLE
+
+        result = get_session("simulator")
+
+        assert [item["id"] for item in result["terminals"]] == [
+            "newest-live",
+            "older-live",
+        ]
+        mock_delete_terminal.assert_called_once_with("stale")
+
     @patch("cli_agent_orchestrator.services.session_service.get_backend")
     def test_get_session_not_found(self, mock_get_backend):
         """Test getting non-existent session."""

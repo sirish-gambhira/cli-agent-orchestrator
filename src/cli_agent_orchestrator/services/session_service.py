@@ -23,7 +23,11 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from cli_agent_orchestrator.backends.registry import get_backend
-from cli_agent_orchestrator.clients.database import list_all_terminals, list_terminals_by_session
+from cli_agent_orchestrator.clients.database import delete_terminal as db_delete_terminal
+from cli_agent_orchestrator.clients.database import (
+    list_all_terminals,
+    list_terminals_by_session,
+)
 from cli_agent_orchestrator.constants import MANAGED_SESSION_PREFIXES
 from cli_agent_orchestrator.models.inbox import OrchestrationType
 from cli_agent_orchestrator.models.kiro_engine import KiroEngine
@@ -137,16 +141,46 @@ def list_sessions() -> List[Dict]:
 def get_session(session_name: str) -> Dict:
     """Get session with terminals."""
     try:
-        if not get_backend().session_exists(session_name):
+        backend = get_backend()
+        if not backend.session_exists(session_name):
             raise ValueError(f"Session '{session_name}' not found")
 
-        tmux_sessions = get_backend().list_sessions()
+        tmux_sessions = backend.list_sessions()
         session_data = next((s for s in tmux_sessions if s["id"] == session_name), None)
 
         if not session_data:
             raise ValueError(f"Session '{session_name}' not found")
 
-        terminals = list_terminals_by_session(session_name)
+        terminals = []
+        for terminal in list_terminals_by_session(session_name):
+            terminal_session = terminal.get("tmux_session")
+            terminal_window = terminal.get("tmux_window")
+            if isinstance(terminal_session, str) and isinstance(terminal_window, str):
+                try:
+                    exists = backend.window_exists(terminal_session, terminal_window)
+                except Exception as exc:
+                    # A transient backend lookup failure is not proof that a
+                    # terminal disappeared. Preserve the row and retry later.
+                    logger.warning(
+                        "Could not reconcile terminal %s (%s:%s): %s",
+                        terminal.get("id"),
+                        terminal_session,
+                        terminal_window,
+                        exc,
+                    )
+                    exists = True
+                if not exists:
+                    terminal_id = terminal.get("id")
+                    if isinstance(terminal_id, str):
+                        db_delete_terminal(terminal_id)
+                    logger.info(
+                        "Removed stale terminal metadata %s for missing window %s:%s",
+                        terminal_id,
+                        terminal_session,
+                        terminal_window,
+                    )
+                    continue
+            terminals.append(terminal)
         # Enrich each terminal with its live status. list_terminals_by_session
         # reads only the DB row (no status column), but callers monitoring an
         # orchestration — the web UI, and the cao-ops-mcp get_session_info tool
@@ -158,6 +192,7 @@ def get_session(session_name: str) -> Dict:
 
         for terminal in terminals:
             terminal["status"] = status_monitor.get_status(terminal["id"]).value
+        terminals.sort(key=lambda item: str(item.get("last_active") or ""), reverse=True)
         return {"session": session_data, "terminals": terminals}
 
     except Exception as e:

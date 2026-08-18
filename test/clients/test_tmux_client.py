@@ -601,6 +601,43 @@ class TestSessionExists:
         assert tmux.session_exists("ses") is False
 
 
+# ── window_exists ────────────────────────────────────────────────────
+
+
+class TestWindowExists:
+    def test_window_exists_true(self, tmux):
+        session = MagicMock()
+        session.windows.get.return_value = MagicMock()
+        tmux.server.sessions.get.return_value = session
+
+        assert tmux.window_exists("ses", "win") is True
+
+    def test_window_exists_false(self, tmux):
+        session = MagicMock()
+        session.windows.get.return_value = None
+        tmux.server.sessions.get.return_value = session
+
+        assert tmux.window_exists("ses", "missing") is False
+
+    def test_window_exists_falls_back_to_exact_cli_listing(self, tmux):
+        from cli_agent_orchestrator.clients.tmux import TmuxLookupError
+
+        tmux.server.sessions.get.side_effect = TmuxLookupError("parse failed")
+        completed = MagicMock(returncode=0, stdout="other\nwanted\n")
+        with patch(
+            "cli_agent_orchestrator.clients.tmux.subprocess.run",
+            return_value=completed,
+        ) as run:
+            assert tmux.window_exists("ses", "wanted") is True
+
+        run.assert_called_once_with(
+            ["tmux", "list-windows", "-t", "=ses", "-F", "#{window_name}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
 # ── get_pane_working_directory ───────────────────────────────────────
 
 
@@ -776,6 +813,7 @@ class TestScrollView:
 
         assert tmux.scroll_view("ses", "win", direction, 9) is True
         pane.cmd.assert_called_with("send-keys", key)
+
 
 class TestPaneIsBracketedPasteIncompatible:
     @pytest.mark.parametrize(

@@ -136,6 +136,14 @@ class TerminalBackend(ABC):
         """
         ...
 
+    def window_exists(self, session_name: str, window_name: str) -> bool:
+        """Whether a backend window/tab still exists.
+
+        Backends that cannot answer reliably preserve metadata by default.
+        """
+
+        return True
+
     # --- Input ---
 
     @abstractmethod
