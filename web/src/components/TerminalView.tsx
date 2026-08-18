@@ -135,10 +135,7 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
 
     api.createFleetTerminalAttachment(node, terminalId)
       .then(created => {
-        if (stopped) {
-          void api.deleteFleetTerminalAttachment(created.id).catch(() => {})
-          return
-        }
+        if (stopped) return
         attachmentId = created.id
         setAttachment(created)
         setGatewayState(created.state === 'live' ? 'live' : 'connecting')
@@ -177,7 +174,6 @@ export function TerminalView({ terminalId, sessionName, provider, agentProfile, 
       stopped = true
       clearTimeout(timeout)
       if (heartbeat) clearInterval(heartbeat)
-      if (attachmentId) void api.deleteFleetTerminalAttachment(attachmentId).catch(() => {})
     }
   }, [node, terminalId, gatewayAttempt])
 

@@ -63,7 +63,6 @@ describe('terminal duplication', () => {
 describe('remote terminal gateway', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
-    vi.spyOn(api, 'deleteFleetTerminalAttachment').mockResolvedValue({ success: true })
   })
 
   it('renders a ttyd attachment instead of a blank xterm pane', async () => {

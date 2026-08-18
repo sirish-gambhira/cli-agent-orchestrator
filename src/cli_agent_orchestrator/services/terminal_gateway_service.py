@@ -171,7 +171,7 @@ class TerminalGatewayService:
                 "-W",
                 "-O",
                 "-m",
-                "1",
+                "4",
                 "-i",
                 "127.0.0.1",
                 "-p",

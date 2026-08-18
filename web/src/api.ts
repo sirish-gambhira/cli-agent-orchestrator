@@ -272,8 +272,6 @@ export const api = {
     }),
   getFleetTerminalAttachment: (attachmentId: string) =>
     fetchJSON<FleetTerminalAttachment>(`/fleet/attachments/${encodeURIComponent(attachmentId)}`),
-  deleteFleetTerminalAttachment: (attachmentId: string) =>
-    fetchJSON<{ success: boolean }>(`/fleet/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' }),
 
   // Agent Profiles & Providers
   listProfiles: (node?: string | null) => fetchJSON<AgentProfileInfo[]>(nodeEndpoint('/agents/profiles', node)),

@@ -81,6 +81,7 @@ def test_attachment_uses_argv_only_ssh_tmux_and_reuses_target(monkeypatch):
     assert len(calls) == 1
     argv = calls[0][0]
     assert argv[0] == "/usr/local/bin/ttyd"
+    assert argv[argv.index("-m") + 1] == "4"
     assert argv[argv.index("--") + 1 :] == [
         "5c-01",
         "tmux",
