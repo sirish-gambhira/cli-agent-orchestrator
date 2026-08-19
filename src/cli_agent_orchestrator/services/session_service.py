@@ -20,6 +20,7 @@ Session Lifecycle:
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from cli_agent_orchestrator.backends.registry import get_backend
@@ -43,6 +44,23 @@ from cli_agent_orchestrator.services.session_env import clear_session_env
 from cli_agent_orchestrator.services.terminal_service import create_terminal
 
 logger = logging.getLogger(__name__)
+STALE_TERMINAL_GRACE_SECONDS = 60
+
+
+def _terminal_is_within_creation_grace(terminal: Dict[str, Any]) -> bool:
+    """Protect fresh metadata while tmux/libtmux listings converge."""
+
+    last_active = terminal.get("last_active")
+    if isinstance(last_active, str):
+        try:
+            last_active = datetime.fromisoformat(last_active)
+        except ValueError:
+            return True
+    if not isinstance(last_active, datetime):
+        return True
+    now = datetime.now(timezone.utc) if last_active.tzinfo else datetime.now()
+    age = (now - last_active).total_seconds()
+    return age < STALE_TERMINAL_GRACE_SECONDS
 
 
 async def create_session(
@@ -167,6 +185,12 @@ def get_session(session_name: str) -> Dict:
                         terminal_session,
                         terminal_window,
                         exc,
+                    )
+                    exists = True
+                if not exists and _terminal_is_within_creation_grace(terminal):
+                    logger.debug(
+                        "Preserving fresh terminal metadata %s while tmux listings converge",
+                        terminal.get("id"),
                     )
                     exists = True
                 if not exists:

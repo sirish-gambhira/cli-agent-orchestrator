@@ -1018,9 +1018,19 @@ class TmuxClient:
 
         try:
             session = self._find_session(session_name)
-            if session is None:
-                return False
-            return self._find_window(session, session_name, window_name) is not None
+            if session is not None:
+                window = self._find_window(session, session_name, window_name)
+                if window is not None:
+                    return True
+            # A just-created session/window can be absent from libtmux's first
+            # listing even though tmux already serves it. Confirm absence with
+            # a fresh parse-free CLI query before deleting durable metadata.
+            exists = self._has_window_via_cli(session_name, window_name)
+            if exists is None:
+                raise TmuxLookupError(
+                    f"Could not confirm tmux window existence for {session_name}:{window_name}"
+                )
+            return exists
         except TmuxLookupError:
             logger.warning(
                 "tmux listing failed for window %s:%s — probing with the tmux CLI",

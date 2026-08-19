@@ -616,8 +616,18 @@ class TestWindowExists:
         session = MagicMock()
         session.windows.get.return_value = None
         tmux.server.sessions.get.return_value = session
+        tmux._has_window_via_cli = MagicMock(return_value=False)
 
         assert tmux.window_exists("ses", "missing") is False
+        tmux._has_window_via_cli.assert_called_once_with("ses", "missing")
+
+    def test_window_exists_confirms_fresh_window_when_libtmux_listing_is_stale(self, tmux):
+        session = MagicMock()
+        session.windows.get.return_value = None
+        tmux.server.sessions.get.return_value = session
+        tmux._has_window_via_cli = MagicMock(return_value=True)
+
+        assert tmux.window_exists("ses", "fresh") is True
 
     def test_window_exists_falls_back_to_exact_cli_listing(self, tmux):
         from cli_agent_orchestrator.clients.tmux import TmuxLookupError

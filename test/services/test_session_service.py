@@ -288,6 +288,40 @@ class TestGetSession:
         ]
         mock_delete_terminal.assert_called_once_with("stale")
 
+    @patch("cli_agent_orchestrator.services.status_monitor.status_monitor.get_status")
+    @patch("cli_agent_orchestrator.services.session_service.db_delete_terminal")
+    @patch("cli_agent_orchestrator.services.session_service.list_terminals_by_session")
+    @patch("cli_agent_orchestrator.services.session_service.get_backend")
+    def test_get_session_preserves_fresh_metadata_during_tmux_listing_race(
+        self,
+        mock_get_backend,
+        mock_list_terminals,
+        mock_delete_terminal,
+        mock_get_status,
+    ):
+        from datetime import datetime
+
+        from cli_agent_orchestrator.models.terminal import TerminalStatus
+
+        backend = mock_get_backend.return_value
+        backend.session_exists.return_value = True
+        backend.list_sessions.return_value = [{"id": "new-session"}]
+        backend.window_exists.return_value = False
+        mock_list_terminals.return_value = [
+            {
+                "id": "fresh-terminal",
+                "tmux_session": "new-session",
+                "tmux_window": "terminal-new",
+                "last_active": datetime.now(),
+            }
+        ]
+        mock_get_status.return_value = TerminalStatus.IDLE
+
+        result = get_session("new-session")
+
+        assert [item["id"] for item in result["terminals"]] == ["fresh-terminal"]
+        mock_delete_terminal.assert_not_called()
+
     @patch("cli_agent_orchestrator.services.session_service.get_backend")
     def test_get_session_not_found(self, mock_get_backend):
         """Test getting non-existent session."""
